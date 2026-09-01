@@ -105,9 +105,11 @@ If Apple sign-in fails, check these first:
 
 1. Confirm the Apple ID has an active Apple Music subscription on `music.apple.com`.
 2. Confirm the Apple ID has signed into Apple Music at least once on a real Apple device or on the web app.
-3. Confirm the host IP is not in a VPS/datacenter range Apple commonly blocks.
+3. Confirm DNS, firewall, VPN, and proxy rules allow the host to reach Apple's services.
 4. Confirm the storefront in Settings matches the Apple ID's region.
 5. Confirm you're running the latest image/build (newer builds include login parser fixes and richer wrapper diagnostics).
+
+Wrapper response type 4 is a generic StoreServices failure, not a credential diagnosis. Use the server message and StoreServices error in the failure log to narrow it down before retrying; repeated attempts can trigger an Apple account lockout.
 
 ## How downloads behave
 
