@@ -109,7 +109,7 @@ If Apple sign-in fails, check these first:
 4. Confirm the storefront in Settings matches the Apple ID's region.
 5. Confirm you're running the latest image/build (newer builds include login parser fixes and richer wrapper diagnostics).
 
-Wrapper response type 4 is a generic StoreServices failure, not a credential diagnosis. Use the server message and StoreServices error in the failure log to narrow it down before retrying; repeated attempts can trigger an Apple account lockout.
+Wrapper response type 4 is a generic StoreServices failure, not a credential diagnosis. Use the server message and StoreServices error in the failure log to narrow it down before retrying; repeated attempts can trigger an Apple account lockout. If the failure log shows a `StoreServices error` with a very large negative number, that came from an older wrapper build — rebuild with `docker compose build --no-cache wrapper` to get the real error code.
 
 ## How downloads behave
 

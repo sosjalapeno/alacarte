@@ -83,6 +83,29 @@ static void write_number(int value) {
   (void)write(2, digits + cursor, (size_type)((int)sizeof(digits) - cursor));
 }
 
+static void write_long(long value) {
+  char digits[32];
+  unsigned long magnitude;
+  int cursor = (int)sizeof(digits);
+
+  if (value < 0) {
+    write_text("-");
+    magnitude = 0UL - (unsigned long)value;
+  } else {
+    magnitude = (unsigned long)value;
+  }
+
+  do {
+    digits[--cursor] = (char)('0' + (magnitude % 10UL));
+    magnitude /= 10UL;
+  } while (magnitude != 0UL);
+  (void)write(2, digits + cursor, (size_type)((int)sizeof(digits) - cursor));
+}
+
+static int string_nonempty(const char *text) {
+  return text != 0 && *text != '\0';
+}
+
 static const char *std_string_data(union std_string *value) {
   if (value == 0) return 0;
   if ((value->short_mode.mark & 1U) == 0U) return value->short_mode.str;
@@ -125,14 +148,20 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
   typedef int (*response_type_fn)(void *);
   typedef union std_string *(*customer_message_fn)(void *);
   typedef struct shared_ptr *(*response_error_fn)(void *);
-  typedef int (*error_code_fn)(void *);
+  typedef int *(*error_code_fn)(void *);
+  typedef long *(*external_error_code_fn)(void *);
+  typedef long *(*auth_status_fn)(void *);
   typedef const char *(*error_what_fn)(void *);
+  typedef void (*error_description_fn)(union std_string *, void *);
 
   static response_type_fn real_response_type;
   static customer_message_fn customer_message;
   static response_error_fn response_error;
   static error_code_fn error_code;
+  static external_error_code_fn external_error_code;
+  static auth_status_fn auth_status;
   static error_what_fn error_what;
+  static error_description_fn error_description;
 
   if (real_response_type == 0) {
     real_response_type = (response_type_fn)dlsym(
@@ -158,15 +187,27 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
       RTLD_NEXT,
       "_ZNK17storeservicescore19StoreErrorCondition9errorCodeEv"
     );
+    external_error_code = (external_error_code_fn)dlsym(
+      RTLD_NEXT,
+      "_ZNK17storeservicescore19StoreErrorCondition17externalErrorCodeEv"
+    );
+    auth_status = (auth_status_fn)dlsym(
+      RTLD_NEXT,
+      "_ZNK17storeservicescore20AuthenticateResponse6statusEv"
+    );
     error_what = (error_what_fn)dlsym(
       RTLD_NEXT,
       "_ZNK17storeservicescore19StoreErrorCondition4whatEv"
+    );
+    error_description = (error_description_fn)dlsym(
+      RTLD_NEXT,
+      "_ZNK17storeservicescore19StoreErrorCondition16errorDescriptionEv"
     );
   }
 
   if (customer_message != 0) {
     const char *message = std_string_data(customer_message(response));
-    if (message != 0 && *message != '\0') {
+    if (string_nonempty(message)) {
       write_text("[!] server message: ");
       write_text(message);
       write_text("\n");
@@ -176,10 +217,43 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
   if (response_error != 0) {
     struct shared_ptr *error = response_error(response);
     if (error != 0 && error->obj != 0) {
+      int code = 0;
+      long external = 0;
+      long status = 0;
+      const char *message = 0;
+
+      if (error_code != 0) {
+        int *code_ptr = error_code(error->obj);
+        if (code_ptr != 0) code = *code_ptr;
+      }
+      if (external_error_code != 0) {
+        long *external_ptr = external_error_code(error->obj);
+        if (external_ptr != 0) external = *external_ptr;
+      }
+      if (auth_status != 0) {
+        long *status_ptr = auth_status(response);
+        if (status_ptr != 0) status = *status_ptr;
+      }
+      if (error_what != 0) {
+        const char *what = error_what(error->obj);
+        if (string_nonempty(what)) message = what;
+      }
+      if (!string_nonempty(message) && error_description != 0) {
+        union std_string desc_out;
+        error_description(&desc_out, error->obj);
+        const char *desc = std_string_data(&desc_out);
+        if (string_nonempty(desc)) message = desc;
+      }
+      if (!string_nonempty(message)) message = "none";
+
       write_text("[!] auth error: code=");
-      write_number(error_code != 0 ? error_code(error->obj) : 0);
+      write_number(code);
+      write_text(", external=");
+      write_long(external);
+      write_text(", status=");
+      write_long(status);
       write_text(", message=");
-      write_text(error_what != 0 ? error_what(error->obj) : "none");
+      write_text(message);
       write_text("\n");
       return response_type;
     }

@@ -9,6 +9,29 @@ function cleanWrapperDiagnostic(value, maxLength = 320) {
   return cleaned.slice(0, maxLength)
 }
 
+const UNREADABLE_CODE_THRESHOLD = 100_000
+
+function isReadableStoreServicesCode(code) {
+  return Number.isFinite(code) && Math.abs(code) <= UNREADABLE_CODE_THRESHOLD
+}
+
+function formatAuthErrorDetail(authError) {
+  const { code, external, status, message } = authError
+  let errorText = 'StoreServices error'
+  if (Number.isFinite(code)) {
+    errorText = isReadableStoreServicesCode(code)
+      ? `StoreServices error ${code}`
+      : 'StoreServices error (code unreadable)'
+  }
+  if (isReadableStoreServicesCode(code)) {
+    const extras = []
+    if (external != null && external !== 0) extras.push(`external ${external}`)
+    if (status != null && status !== 0) extras.push(`status ${status}`)
+    if (extras.length) errorText += ` (${extras.join(', ')})`
+  }
+  return message ? `${errorText}: ${message}` : errorText
+}
+
 export function extractWrapperFailureReason(s) {
   const lines = s
     .split(/\r?\n/)
@@ -54,12 +77,20 @@ export function extractWrapperFailureReason(s) {
     }
     if (!authError) {
       const errorMatch = lines[i].match(
-        /^\[!\]\s*auth error:\s*code=(-?\d+),\s*message=(.*)$/i,
+        /^\[!\]\s*auth error:\s*code=(-?\d+)(?:,\s*external=(-?\d+))?(?:,\s*status=(-?\d+))?,\s*message=(.*)$/i,
       )
       if (errorMatch) {
         authError = {
           code: Number(errorMatch[1]),
-          message: cleanWrapperDiagnostic(errorMatch[2]),
+          external:
+            errorMatch[2] != null && errorMatch[2] !== ''
+              ? Number(errorMatch[2])
+              : null,
+          status:
+            errorMatch[3] != null && errorMatch[3] !== ''
+              ? Number(errorMatch[3])
+              : null,
+          message: cleanWrapperDiagnostic(errorMatch[4]),
         }
       }
     }
@@ -68,12 +99,7 @@ export function extractWrapperFailureReason(s) {
     const details = []
     if (serverMessage) details.push(serverMessage)
     if (authError) {
-      const errorText = Number.isFinite(authError.code)
-        ? `StoreServices error ${authError.code}`
-        : 'StoreServices error'
-      details.push(
-        authError.message ? `${errorText}: ${authError.message}` : errorText,
-      )
+      details.push(formatAuthErrorDetail(authError))
     }
     return `Apple sign-in failed: ${details.join(' — ')}`.slice(0, 480)
   }

@@ -66,3 +66,27 @@ test('failure tail keeps diagnostics and removes bionic startup noise', () => {
     '[!] auth error: code=500, message=temporary failure',
   ])
 })
+
+test('hides unreadable StoreServices codes from truncated pointer values', () => {
+  const reason = extractWrapperFailureReason(`
+    [+] logging in...
+    [.] dialogHandler: {title: Sign In, message: }
+    [.] credentialHandler: {title: , message: , 2FA: false}
+    [!] auth error: code=-269227992, message=
+    [!] auth error: code=-269227992, message=
+    [.] response type 4
+    [!] login failed
+  `)
+
+  assert.match(reason, /code unreadable/i)
+  assert.doesNotMatch(reason, /-269227992/)
+})
+
+test('parses external and status fields from auth error lines', () => {
+  const reason = extractWrapperFailureReason(`
+    [!] auth error: code=2, external=5002, status=0, message=
+    [.] response type 4
+  `)
+
+  assert.equal(reason, 'Apple sign-in failed: StoreServices error 2 (external 5002)')
+})
