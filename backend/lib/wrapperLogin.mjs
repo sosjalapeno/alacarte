@@ -7,6 +7,7 @@ import { emitEvent } from './eventBus.mjs'
 import {
   buildFailureTail,
   extractWrapperFailureReason,
+  formatWorkerExitReason,
   redactWrapperOutput,
 } from './wrapperLoginDiagnostics.mjs'
 
@@ -43,8 +44,10 @@ function passwordValidationError(p) {
   return null
 }
 function validate2faCode(c) {
-  return typeof c === 'string' && /^\d{4,8}$/.test(c.trim())
+  return typeof c === 'string' && /^\d{6}$/.test(c.trim())
 }
+
+export { validate2faCode }
 
 async function safeRemoveContainer(name) {
   try {
@@ -175,17 +178,21 @@ function emitStatus(patch) {
 
 const WRAPPER_2FA_PATH =
   '/app/rootfs/data/data/com.apple.android.music/files/2fa.txt'
+const WRAPPER_2FA_HOST_PATH = path.join(
+  WRAPPER_DATA_IN_WEB,
+  'data',
+  'com.apple.android.music',
+  'files',
+  '2fa.txt',
+)
 
 async function clearStale2faFile() {
+  const dir = path.dirname(WRAPPER_2FA_HOST_PATH)
   const candidates = [
-    path.join(
-      WRAPPER_DATA_IN_WEB,
-      'data',
-      'com.apple.android.music',
-      'files',
-      '2fa.txt',
-    ),
+    WRAPPER_2FA_HOST_PATH,
+    path.join(dir, '.2fa.txt.tmp'),
     path.join(WRAPPER_DATA_IN_WEB, '2fa.txt'),
+    path.join(WRAPPER_DATA_IN_WEB, '.2fa.txt.tmp'),
   ]
   for (const p of candidates) {
     try {
@@ -196,14 +203,38 @@ async function clearStale2faFile() {
   }
 }
 
+async function writeCodeAtomically(code) {
+  const dir = path.dirname(WRAPPER_2FA_HOST_PATH)
+  await fsp.mkdir(dir, { recursive: true })
+  const tmpPath = path.join(dir, `.2fa.txt.${process.pid}.${Date.now()}.tmp`)
+  try {
+    await fsp.writeFile(tmpPath, code, { mode: 0o600, encoding: 'utf8' })
+    await fsp.rename(tmpPath, WRAPPER_2FA_HOST_PATH)
+  } finally {
+    try {
+      await fsp.unlink(tmpPath)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function writeCodeIntoContainer(container, code) {
-  const safe = String(code).replace(/\D/g, '').slice(0, 8)
-  if (!safe) throw new Error('empty 2FA code')
+  const safe = String(code).trim()
+  if (!validate2faCode(safe)) {
+    throw new Error('Code must be exactly 6 digits')
+  }
+
+  if (wrapperDataMountExists()) {
+    await writeCodeAtomically(safe)
+    return
+  }
+
   const exec = await container.exec({
     Cmd: [
       'sh',
       '-c',
-      'printf %s "$1" > "$2" && ls -la "$2" 1>&2',
+      'tmp="$2.tmp.$$" && trap \'rm -f "$tmp"\' EXIT && umask 077 && printf %s "$1" > "$tmp" && mv "$tmp" "$2"',
       'sh',
       safe,
       WRAPPER_2FA_PATH,
@@ -222,7 +253,8 @@ async function writeCodeIntoContainer(container, code) {
   const info = await exec.inspect()
   const output = Buffer.concat(chunks).toString('utf8')
   console.error(
-    `[wrapper-login] 2FA file-drop exit=${info.ExitCode} output=${output.slice(0, 500)}`)
+    `[wrapper-login] 2FA file-drop exit=${info.ExitCode} output=${output.slice(0, 500)}`,
+  )
   if (info.ExitCode !== 0) {
     throw new Error(
       `Failed to write 2FA file inside wrapper container (exit ${info.ExitCode})`,
@@ -360,8 +392,15 @@ async function runLoginFlow() {
     emitEvent('wrapper.login.log', { line: redacted.trim().slice(0, 500) })
     checkCollected()
   })
-  logStream.on('end', () => maybeCompleteByLogs())
-  logStream.on('close', () => maybeCompleteByLogs())
+
+  container
+    .wait()
+    .then((result) => handleContainerExit(result))
+    .catch((err) => {
+      if (active && !active.terminated) {
+        finalizeFailure(err.message || String(err))
+      }
+    })
 
   await container.start()
   emitStatus({ phase: 'signing-in' })
@@ -387,24 +426,38 @@ function checkCollected() {
 
   if (/account info cached successfully/i.test(s)) {
     finalizeSuccess().catch((e) => finalizeFailure(e.message))
-    return
   }
 }
 
-function maybeCompleteByLogs() {
+async function handleContainerExit(result) {
   if (!active || active.terminated) return
-  if (!/account info cached successfully/i.test(active.collected)) {
-    const reason = extractWrapperFailureReason(active.collected)
-    if (reason && /disabled|locked/i.test(reason)) {
-      hardBlockReason = reason
-    }
-    finalizeFailure(
-      reason ||
-        (active.twoFaDetected
-          ? 'Sign-in ended without success after 2FA'
-          : 'Sign-in container exited unexpectedly'),
-    )
+  if (/account info cached successfully/i.test(active.collected)) return
+
+  let oomKilled = false
+  try {
+    const info = await active.container.inspect()
+    oomKilled = Boolean(info.State?.OOMKilled)
+  } catch {
+    /* ignore */
   }
+
+  const statusCode = result?.StatusCode
+  let reason = extractWrapperFailureReason(active.collected)
+  if (!reason) {
+    reason =
+      formatWorkerExitReason({
+        statusCode,
+        oomKilled,
+        twoFaSubmitted: active.twoFaSubmitted,
+      }) ||
+      (active.twoFaDetected
+        ? 'Sign-in ended without success after 2FA'
+        : 'Sign-in container exited unexpectedly')
+  } else if (/disabled|locked/i.test(reason)) {
+    hardBlockReason = reason
+  }
+
+  finalizeFailure(reason)
 }
 
 async function finalizeSuccess() {
@@ -463,7 +516,7 @@ export async function submit2FA(code) {
     throw new Error('2FA code already submitted for this sign-in')
   }
   if (!validate2faCode(code)) {
-    throw new Error('Code must be 4-8 digits')
+    throw new Error('Code must be exactly 6 digits')
   }
   if (!active.container) throw new Error('Login container not available')
   active.twoFaSubmitted = true

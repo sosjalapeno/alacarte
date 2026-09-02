@@ -11,6 +11,20 @@ function cleanWrapperDiagnostic(value, maxLength = 320) {
 
 const UNREADABLE_CODE_THRESHOLD = 100_000
 
+const PROGRESS_ONLY_RES = [
+  /^\[\+\]\s*logging in/i,
+  /^\[!\]\s*Enter your 2FA code/i,
+  /^\[!\]\s*Example command/i,
+  /^\[!\]\s*Waiting for input/i,
+  /^\[!\]\s*Code file detected/i,
+  /^\[\.\]\s*credentialHandler/i,
+  /^\[\.\]\s*dialogHandler:\s*\{title:\s*Sign In/i,
+]
+
+function isProgressOnlyLine(line) {
+  return PROGRESS_ONLY_RES.some((re) => re.test(line))
+}
+
 function isReadableStoreServicesCode(code) {
   return Number.isFinite(code) && Math.abs(code) <= UNREADABLE_CODE_THRESHOLD
 }
@@ -30,6 +44,29 @@ function formatAuthErrorDetail(authError) {
     if (extras.length) errorText += ` (${extras.join(', ')})`
   }
   return message ? `${errorText}: ${message}` : errorText
+}
+
+export function formatWorkerExitReason({
+  statusCode,
+  oomKilled = false,
+  twoFaSubmitted = false,
+} = {}) {
+  if (oomKilled) {
+    return twoFaSubmitted
+      ? 'Sign-in worker was killed by OOM after accepting 2FA'
+      : 'Sign-in worker was killed by OOM'
+  }
+  if (!Number.isFinite(statusCode)) return null
+  if (twoFaSubmitted) {
+    let msg = `Sign-in worker exited after accepting 2FA (exit ${statusCode})`
+    if (statusCode === 139) msg += ' (SIGSEGV)'
+    else if (statusCode === 134) msg += ' (SIGABRT)'
+    return msg
+  }
+  if (statusCode !== 0) {
+    return `Sign-in worker exited unexpectedly (exit ${statusCode})`
+  }
+  return null
 }
 
 export function extractWrapperFailureReason(s) {
@@ -118,7 +155,10 @@ export function extractWrapperFailureReason(s) {
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]
-    if (!/^__bionic_|^\[\+\] initializing|^\[\+\] starting/i.test(l)) {
+    if (
+      !/^__bionic_|^\[\+\] initializing|^\[\+\] starting/i.test(l) &&
+      !isProgressOnlyLine(l)
+    ) {
       return `Sign-in failed: ${l.slice(0, 180)}`
     }
   }

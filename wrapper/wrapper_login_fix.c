@@ -31,8 +31,34 @@ extern signed_size_type write(int fd, const void *buf, size_type count);
 #define RTLD_NEXT ((void *)-1L)
 
 /* Argument parsing happens once, before the worker starts its server threads. */
-static char *saved_password;
+#define MAX_PASSWORD_LEN 512
+#define TWO_FA_SUFFIX_LEN 6
+static char password_buffer[MAX_PASSWORD_LEN + TWO_FA_SUFFIX_LEN + 1];
 static int login_split_active;
+
+static size_type bounded_length(const char *text, size_type limit) {
+  size_type length = 0;
+  if (text == 0) return 0;
+  while (length < limit && text[length] != '\0') length++;
+  return length;
+}
+
+static void clear_login_split_state(void) {
+  password_buffer[0] = '\0';
+  login_split_active = 0;
+}
+
+static int copy_password_after_colon(char *separator) {
+  const char *password = separator + 1;
+  size_type length = bounded_length(password, MAX_PASSWORD_LEN + 1);
+
+  if (length > MAX_PASSWORD_LEN) return 0;
+
+  for (size_type i = 0; i <= length; i++) {
+    password_buffer[i] = password[i];
+  }
+  return 1;
+}
 
 static int text_equal(const char *left, const char *right) {
   if (left == 0 || right == 0) return 0;
@@ -50,13 +76,6 @@ static char *find_char(char *text, char wanted) {
     text++;
   }
   return 0;
-}
-
-static size_type bounded_length(const char *text, size_type limit) {
-  size_type length = 0;
-  if (text == 0) return 0;
-  while (length < limit && text[length] != '\0') length++;
-  return length;
 }
 
 static void write_text(const char *text) {
@@ -125,20 +144,20 @@ char *strtok(char *text, const char *delimiters) {
       char *separator = find_char(text, ':');
       if (separator != 0) {
         *separator = '\0';
-        saved_password = separator + 1;
+        if (!copy_password_after_colon(separator)) {
+          clear_login_split_state();
+          return real_strtok != 0 ? real_strtok(text, delimiters) : 0;
+        }
         login_split_active = 1;
         return text;
       }
     } else if (text == 0 && login_split_active) {
-      char *password = saved_password;
-      saved_password = 0;
       login_split_active = 0;
-      return password != 0 && *password != '\0' ? password : 0;
+      return password_buffer[0] != '\0' ? password_buffer : 0;
     }
   }
 
-  saved_password = 0;
-  login_split_active = 0;
+  clear_login_split_state();
   return real_strtok != 0 ? real_strtok(text, delimiters) : 0;
 }
 
@@ -264,3 +283,43 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
   write_text("\n");
   return response_type;
 }
+
+#ifdef TEST_HARNESS
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+  char login_arg[] = "user@example.com:password:with:colons";
+  char guard_before = (char)0xaa;
+  char guard_after = (char)0xbb;
+  char guards[2] = { guard_before, guard_after };
+
+  char *user = strtok(login_arg, ":");
+  assert(user != 0);
+  assert(strcmp(user, "user@example.com") == 0);
+
+  char *password = strtok(0, ":");
+  assert(password != 0);
+  assert(strcmp(password, "password:with:colons") == 0);
+
+  const char *suffix = "123456";
+  size_type suffix_len = bounded_length(suffix, TWO_FA_SUFFIX_LEN + 1);
+  size_type password_len = bounded_length(password, MAX_PASSWORD_LEN + 1);
+  assert(suffix_len == TWO_FA_SUFFIX_LEN);
+  assert(password_len + suffix_len + 1 <=
+         (size_type)(MAX_PASSWORD_LEN + TWO_FA_SUFFIX_LEN + 1));
+
+  for (size_type i = 0; i < suffix_len; i++) {
+    password[password_len + i] = suffix[i];
+  }
+  password[password_len + suffix_len] = '\0';
+
+  assert(strcmp(password, "password:with:colons123456") == 0);
+  assert(guards[0] == guard_before);
+  assert(guards[1] == guard_after);
+
+  printf("ok\n");
+  return 0;
+}
+#endif

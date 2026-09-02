@@ -808,7 +808,7 @@ function TwoFaModal({ onClose, onCancel }: { onClose: () => void; onCancel: () =
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     const cleaned = code.replace(/\D/g, '')
-    if (cleaned.length < 4) {
+    if (cleaned.length !== 6) {
       setErr('Enter the 6-digit code Apple showed on your trusted device')
       return
     }
@@ -837,11 +837,13 @@ function TwoFaModal({ onClose, onCancel }: { onClose: () => void; onCancel: () =
           inputMode="numeric"
           pattern="\d*"
           autoComplete="one-time-code"
-          maxLength={8}
+          maxLength={6}
           placeholder="••••••"
           className="tracking-[0.5em] text-center text-xl"
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={(e) =>
+            setCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+          }
           disabled={submitting}
         />
         {err && (
@@ -851,7 +853,7 @@ function TwoFaModal({ onClose, onCancel }: { onClose: () => void; onCancel: () =
         )}
         <div className="flex gap-2 justify-end">
           <Button onClick={onCancel} disabled={submitting}>Cancel sign-in</Button>
-          <Button type="submit" disabled={submitting || code.length < 4}>
+          <Button type="submit" disabled={submitting || code.replace(/\D/g, '').length !== 6}>
             {submitting ? 'Verifying…' : 'Verify'}
           </Button>
         </div>
