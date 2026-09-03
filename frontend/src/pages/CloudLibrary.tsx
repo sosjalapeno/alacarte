@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  AlertTriangle,
   Cloud,
   CloudDownload,
   Disc3,
@@ -297,8 +296,6 @@ export function CloudLibraryPage() {
     activeState.total === null && activeState.items.length === 0 && !activeState.error
   const showSkeleton = (activeState.loading || neverFetched) && !hasItems
   const totalLabel = activeState.total !== null ? activeState.total : activeState.items.length
-  const betaKind =
-    activeTab === 'albums' ? 'album' : activeTab === 'playlists' ? 'playlist' : 'song'
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 pt-4 md:pt-6">
@@ -400,26 +397,6 @@ export function CloudLibraryPage() {
           onClick={() => setActiveTab('songs')}
           count={tabs.songs.total ?? tabs.songs.items.length}
         />
-      </div>
-
-      <div
-        className="flex items-start gap-3 rounded-app border border-amber-400/35 bg-amber-500/[0.10] px-4 py-2.5 text-sm text-amber-100/90 backdrop-blur-[10px]"
-        role="status"
-      >
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden />
-        <div>
-          <b className="text-amber-200">Beta:</b> {betaKind}
-          {' '}downloads from Cloud are experimental and may not always behave as expected. Please{' '}
-          <a
-            href="https://github.com/sosjalapeno/alacarte/issues"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium text-amber-200 underline underline-offset-2 transition-colors hover:text-white"
-          >
-            report any issues
-          </a>
-          {' '}you find.
-        </div>
       </div>
 
       {activeState.error && <Badge variant="bad">{activeState.error}</Badge>}
