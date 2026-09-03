@@ -6,13 +6,16 @@ import './styles/global.css'
 
 import App from './App'
 import { LibraryPresenceProvider } from './hooks/useLibraryPresence'
+import { QueueProvider } from './hooks/useQueue'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <LibraryPresenceProvider>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
+      <QueueProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </QueueProvider>
     </LibraryPresenceProvider>
   </React.StrictMode>,
 )
