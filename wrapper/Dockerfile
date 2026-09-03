@@ -8,7 +8,7 @@ RUN apt-get update \
 
 COPY ./rootfs /app/rootfs
 COPY ./wrapper /app
-COPY ./preload_host.c ./preload_libdl_stub.c ./wrapper_login_fix.c /app/
+COPY ./preload_host.c ./preload_libdl_stub.c ./wrapper_login_fix.c ./wrapper-entrypoint.sh /app/
 WORKDIR /app
 
 RUN gcc -shared -fPIC -O2 \
@@ -22,7 +22,8 @@ RUN gcc -shared -fPIC -O2 \
       -Wl,-soname,libwrapper_login_fix.so \
       -L/app/rootfs/system/lib64 -L/tmp \
       -o /app/rootfs/app/libwrapper_login_fix.so /app/wrapper_login_fix.c \
-      -Wl,--no-as-needed -lc -ldl
+      -Wl,--no-as-needed -lc -ldl \
+  && chmod +x /app/wrapper-entrypoint.sh
 
 CMD ["bash", "-c", "/app/wrapper $args"]
 

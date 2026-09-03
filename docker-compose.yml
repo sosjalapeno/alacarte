@@ -16,10 +16,12 @@ services:
       - /dev/urandom:/app/rootfs/dev/urandom
       - /dev/random:/app/rootfs/dev/random
       - /dev/zero:/app/rootfs/dev/zero
-    # Bypass the image's `bash -c "/app/wrapper $args"` entrypoint and hand
-    # argv straight to the binary — avoids all shell-quoting pitfalls.
-    entrypoint: ["/app/wrapper"]
+    # Copy the container runtime's DNS config into the Android chroot before
+    # handing argv straight to the wrapper binary.
+    entrypoint: ["/app/wrapper-entrypoint.sh"]
     command: ["-H", "0.0.0.0"]
+    environment:
+      - LD_PRELOAD=/app/libwrapper_login_fix.so
     expose:
       - "10020"
       - "20020"

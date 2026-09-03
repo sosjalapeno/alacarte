@@ -133,7 +133,7 @@ function wrapperContainerCreateOpts({
     Image: WRAPPER_IMAGE,
     Platform: 'linux/amd64',
     Env: ['LD_PRELOAD=/app/libwrapper_login_fix.so'],
-    Entrypoint: ['/app/wrapper'],
+    Entrypoint: ['/app/wrapper-entrypoint.sh'],
     Cmd: cmd,
     ExposedPorts: {
       '10020/tcp': {},
