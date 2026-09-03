@@ -167,9 +167,3 @@ The UI design was heavily inspired by the beautiful [Abyss theme](https://github
 ## License
 
 MIT — see LICENSE
-
----
-
-<p align="center">
-  <sub><a href="https://www.buymeacoffee.com/sosjalapeno">Buy me a Claude subscription</a></sub>
-</p>
