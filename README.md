@@ -166,6 +166,6 @@ The UI design was heavily inspired by the beautiful [Abyss theme](https://github
 
 ## License
 
-AGPL-3.0 — see LICENSE. Commercial use is allowed; if you distribute or host a modified version, you must provide the corresponding source under AGPL-3.0.
+AGPL-3.0 — see LICENSE
 
 This tool interacts with Apple Music services. You are responsible for ensuring your use complies with Apple's Terms of Service and applicable laws in your jurisdiction.
