@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Apple Music downloader web backend",
   "main": "server.mjs",
   "scripts": {
