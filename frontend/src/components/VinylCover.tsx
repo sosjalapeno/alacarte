@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 
-import vinylTexture from '../assets/vinyl.png'
+const VINYL_SRC = '/vinyl.webp'
 
 export const vinylSpring = { type: 'spring' as const, stiffness: 213, damping: 33, mass: 1 }
 
@@ -40,7 +40,7 @@ export function VinylCover({ coverSrc, coverSrcSet, sizes, hovered, onHoverChang
           transition={vinylSpring}
         >
           <img
-            src={vinylTexture}
+            src={VINYL_SRC}
             alt=""
             className="h-full w-full"
             draggable={false}
