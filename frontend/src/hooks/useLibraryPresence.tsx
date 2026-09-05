@@ -19,8 +19,14 @@ import {
 import { makeAlbumMatchKey, makeSongMatchKey } from '../lib/libraryMatchKey'
 import { useEventStream } from './useEventStream'
 
-type AlbumLookup = Pick<Album, 'id' | 'artistName' | 'name'> & { albumName?: string | null }
-type SongLookup = Pick<Song, 'id' | 'artistName' | 'name'> & { songName?: string | null }
+type AlbumLookup = Pick<Album, 'id' | 'artistName' | 'name'> & {
+  albumName?: string | null
+  upc?: string | null
+}
+type SongLookup = Pick<Song, 'id' | 'artistName' | 'name'> & {
+  songName?: string | null
+  isrc?: string | null
+}
 type PlaylistLookup = Pick<Playlist, 'id'>
 
 export type AlbumTrackPresence = {
@@ -35,7 +41,7 @@ type AlbumTracksLookup = {
   id: string
   artistName: string
   name: string
-  tracks: Array<{ id: string; name: string }>
+  tracks: Array<{ id: string; name: string; isrc?: string | null }>
 }
 
 type LibraryPresenceContextValue = {
@@ -59,13 +65,32 @@ type PresenceSnapshot = {
   albumKeys: Record<string, true>
   songKeys: Record<string, true>
   playlistIds: Record<string, true>
+  isrcs: Record<string, true>
+  upcs: Record<string, true>
   albumTrackPresence: Record<string, AlbumTrackPresence>
 }
 
 const LibraryPresenceContext = createContext<LibraryPresenceContextValue | null>(null)
 
+function normalizeIsrcClient(value: string | null | undefined): string {
+  if (!value) return ''
+  return String(value).toUpperCase().replace(/[\s\-]/g, '')
+}
+
+function normalizeUpcClient(value: string | null | undefined): string {
+  if (!value) return ''
+  return String(value).replace(/\D/g, '')
+}
+
 export function LibraryPresenceProvider({ children }: { children: React.ReactNode }) {
-  const [snapshot, setSnapshot] = useState<PresenceSnapshot>({ albumKeys: {}, songKeys: {}, playlistIds: {}, albumTrackPresence: {} })
+  const [snapshot, setSnapshot] = useState<PresenceSnapshot>({
+    albumKeys: {},
+    songKeys: {},
+    playlistIds: {},
+    isrcs: {},
+    upcs: {},
+    albumTrackPresence: {},
+  })
   const [loading, setLoading] = useState(true)
   const [ready, setReady] = useState(false)
   const requestIdRef = useRef(0)
@@ -84,6 +109,8 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
           r.playlistIds || [],
           r.songKeys || [],
           r.albumKeys || [],
+          r.isrcs || [],
+          r.upcs || [],
         ),
         albumTrackPresence: prev.albumTrackPresence,
       }))
@@ -123,18 +150,22 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
 
   const isAlbumInLibrary = useCallback(
     (album: AlbumLookup | null | undefined) => {
+      const upc = normalizeUpcClient(album?.upc)
+      if (upc && snapshot.upcs[upc]) return true
       const key = makeAlbumKey(album)
       return Boolean(key && snapshot.albumKeys[key])
     },
-    [snapshot.albumKeys],
+    [snapshot.albumKeys, snapshot.upcs],
   )
 
   const isSongInLibrary = useCallback(
     (song: SongLookup | null | undefined) => {
+      const isrc = normalizeIsrcClient(song?.isrc)
+      if (isrc && snapshot.isrcs[isrc]) return true
       const key = makeSongKey(song)
       return Boolean(key && snapshot.songKeys[key])
     },
-    [snapshot.songKeys],
+    [snapshot.songKeys, snapshot.isrcs],
   )
 
   const isPlaylistInLibrary = useCallback(
@@ -150,20 +181,30 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
       const artistName = String(album?.artistName || '').trim()
       const albumName = getAlbumName(album)
       const key = makeAlbumKey(album)
-      if (!artistName || !albumName || !key) return false
-      if (!force && snapshot.albumKeys[key]) return true
-      const requestId = String(album?.id || key)
+      const upc = normalizeUpcClient(album?.upc)
+      if (!artistName || !albumName) return false
+      if (!force) {
+        if (upc && snapshot.upcs[upc]) return true
+        if (key && snapshot.albumKeys[key]) return true
+      }
+      if (!key && !upc) return false
+      const requestId = String(album?.id || key || upc)
       const r = await api.libraryPresence({
-        albums: [{ id: requestId, artistName, albumName }],
+        albums: [{ id: requestId, artistName, albumName, upc: upc || null }],
       })
       const present = Boolean(r.albums?.[requestId])
       if (present) {
-        setSnapshot((prev) =>
-          prev.albumKeys[key]
-            ? prev
-            : { ...prev, albumKeys: { ...prev.albumKeys, [key]: true } },
-        )
-      } else {
+        setSnapshot((prev) => {
+          let next = prev
+          if (key && !prev.albumKeys[key]) {
+            next = { ...next, albumKeys: { ...next.albumKeys, [key]: true } }
+          }
+          if (upc && !prev.upcs[upc]) {
+            next = { ...next, upcs: { ...next.upcs, [upc]: true } }
+          }
+          return next
+        })
+      } else if (key) {
         setSnapshot((prev) => {
           if (!prev.albumKeys[key]) return prev
           const next = { ...prev.albumKeys }
@@ -173,7 +214,7 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
       }
       return present
     },
-    [snapshot.albumKeys],
+    [snapshot.albumKeys, snapshot.upcs],
   )
 
   const verifySongPresence = useCallback(
@@ -181,20 +222,30 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
       const artistName = String(song?.artistName || '').trim()
       const songName = getSongName(song)
       const key = makeSongKey(song)
-      if (!artistName || !songName || !key) return false
-      if (!force && snapshot.songKeys[key]) return true
-      const requestId = String(song?.id || key)
+      const isrc = normalizeIsrcClient(song?.isrc)
+      if (!artistName || !songName) return false
+      if (!force) {
+        if (isrc && snapshot.isrcs[isrc]) return true
+        if (key && snapshot.songKeys[key]) return true
+      }
+      if (!key && !isrc) return false
+      const requestId = String(song?.id || key || isrc)
       const r = await api.libraryPresence({
-        songs: [{ id: requestId, artistName, songName }],
+        songs: [{ id: requestId, artistName, songName, isrc: isrc || null }],
       })
       const present = Boolean(r.songs?.[requestId])
       if (present) {
-        setSnapshot((prev) =>
-          prev.songKeys[key]
-            ? prev
-            : { ...prev, songKeys: { ...prev.songKeys, [key]: true } },
-        )
-      } else {
+        setSnapshot((prev) => {
+          let next = prev
+          if (key && !prev.songKeys[key]) {
+            next = { ...next, songKeys: { ...next.songKeys, [key]: true } }
+          }
+          if (isrc && !prev.isrcs[isrc]) {
+            next = { ...next, isrcs: { ...next.isrcs, [isrc]: true } }
+          }
+          return next
+        })
+      } else if (key) {
         setSnapshot((prev) => {
           if (!prev.songKeys[key]) return prev
           const next = { ...prev.songKeys }
@@ -204,7 +255,7 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
       }
       return present
     },
-    [snapshot.songKeys],
+    [snapshot.songKeys, snapshot.isrcs],
   )
 
   const verifyPlaylistPresence = useCallback(
@@ -242,7 +293,11 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
             id,
             artistName,
             albumName,
-            tracks: tracks.map((t) => ({ id: String(t.id), name: String(t.name) })),
+            tracks: tracks.map((t) => ({
+              id: String(t.id),
+              name: String(t.name),
+              isrc: t.isrc || null,
+            })),
           },
         ],
       })
@@ -320,10 +375,14 @@ function buildSnapshot(
   playlistIdsArr: string[],
   songKeysArr: string[],
   albumKeysArr: string[] = [],
+  isrcsArr: string[] = [],
+  upcsArr: string[] = [],
 ): PresenceSnapshot {
   const albumKeys: Record<string, true> = {}
   const songKeys: Record<string, true> = {}
   const playlistIds: Record<string, true> = {}
+  const isrcs: Record<string, true> = {}
+  const upcs: Record<string, true> = {}
 
   for (const key of albumKeysArr || []) {
     if (key) albumKeys[String(key)] = true
@@ -350,7 +409,17 @@ function buildSnapshot(
     if (id) playlistIds[String(id)] = true
   }
 
-  return { albumKeys, songKeys, playlistIds, albumTrackPresence: {} }
+  for (const isrc of isrcsArr || []) {
+    const n = normalizeIsrcClient(isrc)
+    if (n) isrcs[n] = true
+  }
+
+  for (const upc of upcsArr || []) {
+    const n = normalizeUpcClient(upc)
+    if (n) upcs[n] = true
+  }
+
+  return { albumKeys, songKeys, playlistIds, isrcs, upcs, albumTrackPresence: {} }
 }
 
 function makeAlbumKey(album: AlbumLookup | LibraryAlbum | null | undefined) {

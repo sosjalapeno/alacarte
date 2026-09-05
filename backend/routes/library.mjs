@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 
 import { searchCatalog } from '../lib/appleApi.mjs'
+import { normalizeIsrc, normalizeUpc } from '../lib/audioTags.mjs'
 import { emitEvent } from '../lib/eventBus.mjs'
 import {
   getAlbumTrackPresence,
@@ -51,6 +52,8 @@ libraryRouter.get('/', async (_req, res) => {
       albumKeys: Array.from(index.albumKeys || []),
       songKeys: Array.from(index.songKeys || []),
       playlistIds: Array.from(index.playlistIds || []),
+      isrcs: Array.from(index.isrcs || []),
+      upcs: Array.from(index.upcs || []),
       totals: {
         albums: albums.length,
         singles: singles.length,
@@ -75,8 +78,12 @@ libraryRouter.post('/presence', async (req, res) => {
       if (!id) continue
       const artistName = String(item?.artistName || '')
       const albumName = stripTrailingYear(String(item?.albumName || ''))
+      const upcNorm = normalizeUpc(item?.upc)
       const key = makeAlbumKey(artistName, albumName)
-      albums[id] = index.albumKeys.has(key)
+      albums[id] = Boolean(
+        (key && index.albumKeys.has(key)) ||
+          (upcNorm && index.upcs?.has(upcNorm)),
+      )
     }
 
     const songs = {}
@@ -85,7 +92,11 @@ libraryRouter.post('/presence', async (req, res) => {
       if (!id) continue
       const artistName = String(item?.artistName || '')
       const songName = String(item?.songName || '')
-      songs[id] = index.songKeys.has(makeSongKey(artistName, songName))
+      const isrcNorm = normalizeIsrc(item?.isrc)
+      songs[id] = Boolean(
+        index.songKeys.has(makeSongKey(artistName, songName)) ||
+          (isrcNorm && index.isrcs?.has(isrcNorm)),
+      )
     }
 
     const playlists = {}

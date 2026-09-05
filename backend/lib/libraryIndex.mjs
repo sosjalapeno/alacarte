@@ -2,6 +2,11 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 
 import {
+  normalizeIsrc,
+  normalizeUpc,
+  readAudioIdentityTags,
+} from './audioTags.mjs'
+import {
   makeAlbumMatchKey,
   makeSongMatchKey,
   stripTrailingYear,
@@ -42,6 +47,14 @@ export async function scanLibrary() {
   const singlesSongKeys = new Set()
   const playlistIds = new Set()
   const playlists = []
+  const isrcs = new Set()
+  const upcs = new Set()
+
+  async function collectTags(audioPath) {
+    const tags = await readAudioIdentityTags(audioPath)
+    if (tags.isrc) isrcs.add(tags.isrc)
+    if (tags.upc) upcs.add(tags.upc)
+  }
 
   const playlistsDir = path.join(MUSIC_ROOT, 'Playlists')
   const playlistEntries = await readDirSafe(playlistsDir)
@@ -122,6 +135,7 @@ export async function scanLibrary() {
             songKeys.add(songKey)
             singlesSongKeys.add(songKey)
           }
+          await collectTags(audioPath)
         }
         continue
       }
@@ -156,12 +170,14 @@ export async function scanLibrary() {
       albumKeys.add(albumKey)
       const trackSet = new Set()
       for (const file of audioFiles) {
+        const audioPath = path.join(childPath, file.name)
         const songName = songNameFromFilename(file.name)
         if (!songName) continue
         const songKey = makeSongKey(artistName, songName)
         if (!songKey) continue
         songKeys.add(songKey)
         trackSet.add(songKey)
+        await collectTags(audioPath)
       }
       if (albumKey) albumTrackKeys.set(albumKey, trackSet)
     }
@@ -187,6 +203,8 @@ export async function scanLibrary() {
     singlesSongKeys,
     playlistIds,
     playlists,
+    isrcs,
+    upcs,
   }
 }
 
@@ -320,10 +338,12 @@ export async function isPlaylistInLibrary(playlistId, preScannedIndex = null) {
   return index.playlistIds.has(String(playlistId))
 }
 
-export async function hasAlbumInLibrary(artistName, albumName, preScannedIndex = null) {
+export async function hasAlbumInLibrary(artistName, albumName, preScannedIndex = null, upc = null) {
+  const index = preScannedIndex || (await getCachedIndex())
+  const upcNorm = normalizeUpc(upc)
+  if (upcNorm && index.upcs?.has(upcNorm)) return true
   const key = makeAlbumKey(artistName, stripTrailingYear(albumName))
   if (!key) return false
-  const index = preScannedIndex || (await getCachedIndex())
   return index.albumKeys.has(key)
 }
 
@@ -332,14 +352,17 @@ export async function getAlbumTrackPresence(artistName, albumName, tracks, preSc
   const albumKey = makeAlbumKey(artistName, albumName)
   const albumTrackSet = albumKey ? index.albumTrackKeys.get(albumKey) || null : null
   const singlesSet = index.singlesSongKeys || new Set()
+  const isrcSet = index.isrcs || new Set()
   const present = {}
   let count = 0
   for (const track of tracks || []) {
     const id = String(track?.id || '')
     if (!id) continue
     const songKey = makeSongKey(artistName, track?.name || '')
+    const isrcNorm = normalizeIsrc(track?.isrc)
     const has = Boolean(
-      songKey && ((albumTrackSet && albumTrackSet.has(songKey)) || singlesSet.has(songKey)),
+      (songKey && ((albumTrackSet && albumTrackSet.has(songKey)) || singlesSet.has(songKey))) ||
+        (isrcNorm && isrcSet.has(isrcNorm)),
     )
     present[id] = has
     if (has) count += 1
@@ -354,10 +377,12 @@ export async function getAlbumTrackPresence(artistName, albumName, tracks, preSc
   }
 }
 
-export async function hasSongInLibrary(artistName, songName, preScannedIndex = null) {
+export async function hasSongInLibrary(artistName, songName, preScannedIndex = null, isrc = null) {
+  const index = preScannedIndex || (await getCachedIndex())
+  const isrcNorm = normalizeIsrc(isrc)
+  if (isrcNorm && index.isrcs?.has(isrcNorm)) return true
   const key = makeSongKey(artistName, songName)
   if (!key) return false
-  const index = preScannedIndex || (await getCachedIndex())
   return index.songKeys.has(key)
 }
 

@@ -92,7 +92,7 @@ export function AlbumPage() {
                 id: r.album.id,
                 artistName: r.album.artistName,
                 name: r.album.name,
-                tracks: r.album.tracks.map((t) => ({ id: t.id, name: t.name })),
+                tracks: r.album.tracks.map((t) => ({ id: t.id, name: t.name, isrc: t.isrc })),
               },
               true,
             )
@@ -117,7 +117,7 @@ export function AlbumPage() {
           id: album.id,
           artistName: album.artistName,
           name: album.name,
-          tracks: album.tracks.map((t) => ({ id: t.id, name: t.name })),
+          tracks: album.tracks.map((t) => ({ id: t.id, name: t.name, isrc: t.isrc })),
         },
         false,
       )
@@ -329,7 +329,7 @@ export function AlbumPage() {
                                 id: album.id,
                                 artistName: album.artistName,
                                 name: album.name,
-                                tracks: album.tracks.map((x) => ({ id: x.id, name: x.name })),
+                                tracks: album.tracks.map((x) => ({ id: x.id, name: x.name, isrc: x.isrc })),
                               },
                               true,
                             )

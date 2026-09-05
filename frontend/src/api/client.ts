@@ -11,6 +11,7 @@ export type Album = {
   artworkTemplate: string | null
   artworkColor?: string | null
   url?: string
+  upc?: string | null
 }
 
 export type Artist = {
@@ -31,6 +32,7 @@ export type Song = {
   albumId?: string | null
   durationMs?: number
   artworkTemplate: string | null
+  isrc?: string | null
 }
 
 export type Playlist = {
@@ -98,6 +100,7 @@ export type AlbumTrack = {
   discNumber?: number
   durationMs?: number
   artistName: string
+  isrc?: string | null
   hasLossless?: boolean
   hasHiRes?: boolean
   hasAtmos?: boolean
@@ -600,17 +603,19 @@ export const api = {
       albumKeys?: string[]
       songKeys?: string[]
       playlistIds?: string[]
+      isrcs?: string[]
+      upcs?: string[]
       totals: { albums: number; singles: number; playlists?: number }
     }>('/api/library'),
   libraryPresence: (payload: {
-    albums?: Array<{ id: string; artistName: string; albumName: string }>
-    songs?: Array<{ id: string; artistName: string; songName: string }>
+    albums?: Array<{ id: string; artistName: string; albumName: string; upc?: string | null }>
+    songs?: Array<{ id: string; artistName: string; songName: string; isrc?: string | null }>
     playlists?: Array<{ id: string }>
     albumTracks?: Array<{
       id: string
       artistName: string
       albumName: string
-      tracks: Array<{ id: string; name: string }>
+      tracks: Array<{ id: string; name: string; isrc?: string | null }>
     }>
   }) =>
     http<{

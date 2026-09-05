@@ -252,15 +252,15 @@ export async function enqueueAlbum({ albumId, storefront, quality, expectedArtis
     const presence = await getAlbumTrackPresence(
       meta.artistName,
       meta.name,
-      meta.tracks.map((t) => ({ id: t.id, name: t.name })),
+      meta.tracks.map((t) => ({ id: t.id, name: t.name, isrc: t.isrc })),
     )
-    if (presence.complete || presence.present === presence.expected) {
+    if (presence.complete) {
       throw alreadyInLibraryError('Already in library')
     }
     if (presence.present > 0) {
       missingTracks = meta.tracks
         .filter((t) => !presence.tracks[t.id])
-        .map((t) => ({ id: t.id, name: t.name }))
+        .map((t) => ({ id: t.id, name: t.name, isrc: t.isrc }))
     }
   }
 
@@ -512,12 +512,13 @@ export async function enqueueSong({ songId, albumId, storefront, quality }) {
   }
 
   const trackName = trackMeta?.attributes?.name || 'Unknown track'
+  const trackIsrc = trackMeta?.attributes?.isrc || null
 
   if (
     meta?.artistName &&
     trackName &&
     trackName !== 'Unknown track' &&
-    (await hasSongInLibrary(meta.artistName, trackName))
+    (await hasSongInLibrary(meta.artistName, trackName, null, trackIsrc))
   ) {
     throw alreadyInLibraryError('Already in library')
   }

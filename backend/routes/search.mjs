@@ -47,6 +47,7 @@ function mapAlbum(x, resolveArtistId) {
     artworkTemplate: x.attributes?.artwork?.url || null,
     artworkColor: x.attributes?.artwork?.bgColor || null,
     url: x.attributes?.url,
+    upc: x.attributes?.upc || null,
   }
 }
 
@@ -67,6 +68,7 @@ function mapSong(x, resolveArtistId) {
     artworkTemplate: x.attributes?.artwork?.url || null,
     artworkColor: x.attributes?.artwork?.bgColor || null,
     url: songUrl,
+    isrc: x.attributes?.isrc || null,
   }
 }
 
@@ -100,6 +102,7 @@ function albumFromNormalized(album) {
     artworkTemplate: album.artworkTemplate,
     artworkColor: album.artworkColor,
     url: album.url,
+    upc: album.upc || null,
   }
 }
 
