@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Search as SearchIcon,
   X,
@@ -49,6 +49,7 @@ function parseCats(param: string | null): Category[] {
 }
 
 export function SearchPage() {
+  const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const urlQ = params.get('q') ?? ''
   const cats = useMemo(() => parseCats(params.get('cats')), [params])
@@ -102,11 +103,19 @@ export function SearchPage() {
       setError(null)
       try {
         const r = await api.search(trimmed)
-        if (!ctl.signal.aborted) {
-          const next = { albums: r.albums, artists: r.artists, songs: r.songs, playlists: r.playlists ?? [] }
-          resultCache.set(trimmed, next)
-          setResults(next)
+        if (ctl.signal.aborted) return
+        if (r.redirect) {
+          navigate(r.redirect, { replace: true })
+          return
         }
+        const next = {
+          albums: r.albums,
+          artists: r.artists,
+          songs: r.songs,
+          playlists: r.playlists ?? [],
+        }
+        resultCache.set(trimmed, next)
+        setResults(next)
       } catch (err: any) {
         if (!ctl.signal.aborted) setError(err?.message || 'Search failed')
       } finally {
@@ -117,7 +126,7 @@ export function SearchPage() {
       ctl.abort()
       clearTimeout(t)
     }
-  }, [trimmed])
+  }, [trimmed, navigate])
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -168,7 +177,7 @@ export function SearchPage() {
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Artists, albums, songs, playlists…"
+          placeholder="Artists, albums, songs, playlists, or Apple Music links…"
           className="pl-12 pr-12 text-base"
           autoCapitalize="off"
           autoCorrect="off"
@@ -191,7 +200,9 @@ export function SearchPage() {
       {!trimmed && (
         <Card className="p-8 text-center text-white/55">
           <SearchIcon className="h-8 w-8 mx-auto mb-2 opacity-40" />
-          <div className="text-sm">Try searching for an artist, album, or song.</div>
+          <div className="text-sm">
+            Try searching for an artist, album, or song — or paste an Apple Music link.
+          </div>
         </Card>
       )}
 

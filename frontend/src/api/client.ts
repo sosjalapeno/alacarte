@@ -516,6 +516,7 @@ export const api = {
       songs: Song[]
       playlists: Playlist[]
       storefront: string
+      redirect?: string
     }>(`/api/search?${params.toString()}`)
   },
   album: (id: string) =>
