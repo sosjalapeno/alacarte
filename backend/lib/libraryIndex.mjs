@@ -1,7 +1,13 @@
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
-import { sanitizeSegment } from './folderLayout.mjs'
+import {
+  makeAlbumMatchKey,
+  makeSongMatchKey,
+  stripTrailingYear,
+} from './libraryMatchKey.mjs'
+
+export { stripTrailingYear }
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
 const AUDIO_RE = /\.(flac|m4a|mp3)$/i
@@ -356,24 +362,11 @@ export async function hasSongInLibrary(artistName, songName, preScannedIndex = n
 }
 
 export function makeAlbumKey(artistName, albumName) {
-  const artistKey = sanitizeSegment(artistName).toLowerCase()
-  const albumKey = sanitizeSegment(stripTrailingYear(albumName)).toLowerCase()
-  if (!artistKey || !albumKey || artistKey === '_' || albumKey === '_') return ''
-  return `${artistKey}::${albumKey}`
+  return makeAlbumMatchKey(artistName, albumName)
 }
 
 export function makeSongKey(artistName, songName) {
-  const artistKey = sanitizeSegment(artistName).toLowerCase()
-  const songKey = sanitizeSegment(songName).toLowerCase()
-  if (!artistKey || !songKey || artistKey === '_' || songKey === '_') return ''
-  return `${artistKey}::${songKey}`
-}
-
-export function stripTrailingYear(title) {
-  if (!title) return title
-  return String(title)
-    .replace(/\s*[([]\d{4}[)\]]\s*$/, '')
-    .trim()
+  return makeSongMatchKey(artistName, songName)
 }
 
 async function hasSiblingLrc(audioPath) {

@@ -597,6 +597,7 @@ export const api = {
       albums: LibraryAlbum[]
       singles: LibrarySingle[]
       playlists: LibraryPlaylist[]
+      albumKeys?: string[]
       songKeys?: string[]
       playlistIds?: string[]
       totals: { albums: number; singles: number; playlists?: number }

@@ -16,7 +16,7 @@ import {
   type Playlist,
   type Song,
 } from '../api/client'
-import { stripYear } from '../lib/format'
+import { makeAlbumMatchKey, makeSongMatchKey } from '../lib/libraryMatchKey'
 import { useEventStream } from './useEventStream'
 
 type AlbumLookup = Pick<Album, 'id' | 'artistName' | 'name'> & { albumName?: string | null }
@@ -62,7 +62,6 @@ type PresenceSnapshot = {
   albumTrackPresence: Record<string, AlbumTrackPresence>
 }
 
-const BAD_CHARS = /[<>:"/\\|?*\x00-\x1f]/g
 const LibraryPresenceContext = createContext<LibraryPresenceContextValue | null>(null)
 
 export function LibraryPresenceProvider({ children }: { children: React.ReactNode }) {
@@ -79,7 +78,13 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
       const r = await api.library()
       if (requestId !== requestIdRef.current) return
       setSnapshot((prev) => ({
-        ...buildSnapshot(r.albums, r.singles, r.playlistIds || [], r.songKeys || []),
+        ...buildSnapshot(
+          r.albums,
+          r.singles,
+          r.playlistIds || [],
+          r.songKeys || [],
+          r.albumKeys || [],
+        ),
         albumTrackPresence: prev.albumTrackPresence,
       }))
       setReady(true)
@@ -314,14 +319,22 @@ function buildSnapshot(
   singles: LibrarySingle[],
   playlistIdsArr: string[],
   songKeysArr: string[],
+  albumKeysArr: string[] = [],
 ): PresenceSnapshot {
   const albumKeys: Record<string, true> = {}
   const songKeys: Record<string, true> = {}
   const playlistIds: Record<string, true> = {}
 
-  for (const album of albums) {
-    const key = makeAlbumKey(album)
-    if (key) albumKeys[key] = true
+  for (const key of albumKeysArr || []) {
+    if (key) albumKeys[String(key)] = true
+  }
+
+  // Fallback if older server omitted albumKeys
+  if (albumKeysArr.length === 0) {
+    for (const album of albums) {
+      const key = makeAlbumKey(album)
+      if (key) albumKeys[key] = true
+    }
   }
 
   for (const single of singles) {
@@ -341,37 +354,21 @@ function buildSnapshot(
 }
 
 function makeAlbumKey(album: AlbumLookup | LibraryAlbum | null | undefined) {
-  const artistName = sanitizeLookupSegment(String(album?.artistName || ''))
-  const albumName = sanitizeLookupSegment(getAlbumName(album))
-  if (!artistName || !albumName || artistName === '_' || albumName === '_') return ''
-  return `${artistName}::${albumName}`
+  return makeAlbumMatchKey(album?.artistName, getAlbumName(album))
 }
 
 function makeSongKey(song: SongLookup | LibrarySingle | null | undefined) {
-  const artistName = sanitizeLookupSegment(String(song?.artistName || ''))
-  const songName = sanitizeLookupSegment(getSongName(song))
-  if (!artistName || !songName || artistName === '_' || songName === '_') return ''
-  return `${artistName}::${songName}`
+  return makeSongMatchKey(song?.artistName, getSongName(song))
 }
 
 function getAlbumName(album: AlbumLookup | LibraryAlbum | null | undefined) {
   if (!album) return ''
   const albumName = 'albumName' in album ? album.albumName : album.name
-  return stripYear(String(albumName || ''))
+  return String(albumName || '').trim()
 }
 
 function getSongName(song: SongLookup | LibrarySingle | null | undefined) {
   if (!song) return ''
   const songName = 'songName' in song ? song.songName : song.name
   return String(songName || '').trim()
-}
-
-function sanitizeLookupSegment(value: string) {
-  return (
-    String(value || '')
-      .replace(BAD_CHARS, '_')
-      .replace(/\.+$/g, '')
-      .trim()
-      .slice(0, 200) || '_'
-  ).toLowerCase()
 }
