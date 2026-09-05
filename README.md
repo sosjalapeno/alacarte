@@ -95,7 +95,7 @@ A few things to keep in mind:
 ALACarte needs to authenticate with Apple to obtain decryption tokens. This happens once, then the session persists across container restarts.
 
 1. Enter your credentials in Settings and click Save.
-2. If Apple requires 2FA, you'll see a prompt asking for the code sent to your Apple devices.
+2. If Apple requires 2FA, you'll see a prompt asking for the 6-digit code. If a trusted device only shows Allow / Not Me, generate a code from Settings → Apple ID → Sign-In & Security → Get Verification Code.
 3. Enter the code within ~2 minutes.
 4. When you see "Ready", you're good to search and download.
 

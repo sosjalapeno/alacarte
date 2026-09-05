@@ -4,7 +4,11 @@ import assert from 'node:assert/strict'
 import {
   buildFailureTail,
   extractWrapperFailureReason,
+  formatUnexpectedExitFallback,
   formatWorkerExitReason,
+  isSpuriousWaitResult,
+  logsIndicateTwoFa,
+  parseAttachChunk,
   redactWrapperOutput,
 } from '../lib/wrapperLoginDiagnostics.mjs'
 import { validate2faCode } from '../lib/wrapperLogin.mjs'
@@ -128,6 +132,73 @@ test('formats post-2FA worker exits with signal hints', () => {
     formatWorkerExitReason({ statusCode: 0, oomKilled: true, twoFaSubmitted: true }),
     'Sign-in worker was killed by OOM after accepting 2FA',
   )
+  assert.equal(formatWorkerExitReason({ statusCode: -1 }), null)
+})
+
+test('ignores wait results that never saw a started container', () => {
+  assert.equal(
+    isSpuriousWaitResult({ statusCode: 0, started: false, running: false }),
+    true,
+  )
+  assert.equal(
+    isSpuriousWaitResult({ statusCode: -1, started: false, running: false }),
+    true,
+  )
+  assert.equal(
+    isSpuriousWaitResult({ statusCode: 0, started: true, running: true }),
+    true,
+  )
+  assert.equal(
+    isSpuriousWaitResult({ statusCode: 0, started: true, running: false }),
+    false,
+  )
+})
+
+test('detects 2FA from the enter-code banner or credentialHandler', () => {
+  assert.equal(
+    logsIndicateTwoFa(
+      '[!] Enter your 2FA code into rootfs/data/data/com.apple.android.music/files/2fa.txt',
+    ),
+    true,
+  )
+  assert.equal(
+    logsIndicateTwoFa(
+      '[.] credentialHandler: {title: , message: , 2FA: true}',
+    ),
+    true,
+  )
+  assert.equal(
+    logsIndicateTwoFa(
+      '[.] credentialHandler: {title: , message: , 2FA: false}',
+    ),
+    false,
+  )
+})
+
+test('keeps unexpected-exit fallbacks from being empty', () => {
+  assert.equal(
+    formatUnexpectedExitFallback({
+      statusCode: 0,
+      twoFaDetected: false,
+    }),
+    'Sign-in container exited unexpectedly (exit=0 oom=0 twoFaDetected=0)',
+  )
+  assert.equal(
+    formatUnexpectedExitFallback({
+      statusCode: -1,
+      twoFaDetected: true,
+    }),
+    'Sign-in ended without success after 2FA (exit=-1 oom=0 twoFaDetected=1)',
+  )
+})
+
+test('parses docker multiplexed attach frames and raw podman chunks', () => {
+  const payload = Buffer.from('[+] logging in...\n')
+  const header = Buffer.alloc(8)
+  header[0] = 1
+  header.writeUInt32BE(payload.length, 4)
+  assert.equal(parseAttachChunk(Buffer.concat([header, payload])), '[+] logging in...\n')
+  assert.equal(parseAttachChunk(payload), '[+] logging in...\n')
 })
 
 test('accepts only exactly six digits for 2FA codes', () => {

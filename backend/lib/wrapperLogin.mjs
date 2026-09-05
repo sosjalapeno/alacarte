@@ -7,7 +7,11 @@ import { emitEvent } from './eventBus.mjs'
 import {
   buildFailureTail,
   extractWrapperFailureReason,
+  formatUnexpectedExitFallback,
   formatWorkerExitReason,
+  isSpuriousWaitResult,
+  logsIndicateTwoFa,
+  parseAttachChunk,
   redactWrapperOutput,
 } from './wrapperLoginDiagnostics.mjs'
 
@@ -262,16 +266,15 @@ async function writeCodeIntoContainer(container, code) {
   }
 }
 
-function parseMultiplexedChunk(buf) {
-  const out = []
-  while (buf.length > 8) {
-    const len = buf.readUInt32BE(4)
-    if (buf.length < 8 + len) break
-    const body = buf.subarray(8, 8 + len).toString('utf8')
-    buf = buf.subarray(8 + len)
-    out.push(body)
-  }
-  return out.join('')
+const LOG_DRAIN_MS = 250
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function containerHasStarted(info) {
+  const startedAt = info?.State?.StartedAt
+  return Boolean(startedAt) && !String(startedAt).startsWith('0001-01-01')
 }
 
 export function getLoginStatus() {
@@ -386,15 +389,19 @@ async function runLoginFlow() {
   })
   logStream.on('data', (chunk) => {
     if (!active) return
-    const text = parseMultiplexedChunk(chunk)
+    const text = parseAttachChunk(chunk)
+    if (!text) return
     const redacted = redactWrapperOutput(text, active.email, active.password)
     active.collected += redacted
     emitEvent('wrapper.login.log', { line: redacted.trim().slice(0, 500) })
     checkCollected()
   })
+  logStream.on('end', () => maybeCompleteByLogs())
+  logStream.on('close', () => maybeCompleteByLogs())
 
   container
-    .wait()
+    .wait({ condition: 'next-exit' })
+    .catch(() => container.wait())
     .then((result) => handleContainerExit(result))
     .catch((err) => {
       if (active && !active.terminated) {
@@ -416,10 +423,7 @@ function checkCollected() {
   if (!active) return
   const s = active.collected
 
-  if (
-    !active.twoFaDetected &&
-    /\[!\] Enter your 2FA code into rootfs/i.test(s)
-  ) {
+  if (!active.twoFaDetected && logsIndicateTwoFa(s)) {
     active.twoFaDetected = true
     emitStatus({ phase: '2fa-required' })
   }
@@ -429,19 +433,38 @@ function checkCollected() {
   }
 }
 
+function maybeCompleteByLogs() {
+  if (!active || active.terminated) return
+  handleContainerExit(null).catch(() => {})
+}
+
 async function handleContainerExit(result) {
   if (!active || active.terminated) return
   if (/account info cached successfully/i.test(active.collected)) return
 
   let oomKilled = false
+  let running = false
+  let started = false
   try {
     const info = await active.container.inspect()
     oomKilled = Boolean(info.State?.OOMKilled)
+    running = Boolean(info.State?.Running)
+    started = containerHasStarted(info)
   } catch {
     /* ignore */
   }
 
   const statusCode = result?.StatusCode
+  if (isSpuriousWaitResult({ statusCode, running, started })) return
+
+  await delay(LOG_DRAIN_MS)
+  if (!active || active.terminated) return
+  if (/account info cached successfully/i.test(active.collected)) return
+  if (!active.twoFaDetected && logsIndicateTwoFa(active.collected)) {
+    active.twoFaDetected = true
+    emitStatus({ phase: '2fa-required' })
+  }
+
   let reason = extractWrapperFailureReason(active.collected)
   if (!reason) {
     reason =
@@ -450,9 +473,12 @@ async function handleContainerExit(result) {
         oomKilled,
         twoFaSubmitted: active.twoFaSubmitted,
       }) ||
-      (active.twoFaDetected
-        ? 'Sign-in ended without success after 2FA'
-        : 'Sign-in container exited unexpectedly')
+      formatUnexpectedExitFallback({
+        statusCode,
+        oomKilled,
+        twoFaDetected: active.twoFaDetected,
+        twoFaSubmitted: active.twoFaSubmitted,
+      })
   } else if (/disabled|locked/i.test(reason)) {
     hardBlockReason = reason
   }
@@ -501,6 +527,11 @@ async function finalizeFailure(reason) {
   } finally {
     await safeRemoveContainer(TEMP_CONTAINER).catch(() => {})
     await clearStale2faFile().catch(() => {})
+    try {
+      await startMainWrapper()
+    } catch {
+      /* ignore */
+    }
     const reject = active.reject
     resetActive()
     reject?.(new Error(reason))

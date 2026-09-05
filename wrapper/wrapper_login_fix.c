@@ -294,7 +294,6 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
   typedef long *(*external_error_code_fn)(void *);
   typedef long *(*auth_status_fn)(void *);
   typedef const char *(*error_what_fn)(void *);
-  typedef void (*error_description_fn)(union std_string *, void *);
 
   static response_type_fn real_response_type;
   static customer_message_fn customer_message;
@@ -303,7 +302,6 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
   static external_error_code_fn external_error_code;
   static auth_status_fn auth_status;
   static error_what_fn error_what;
-  static error_description_fn error_description;
 
   if (real_response_type == 0) {
     real_response_type = (response_type_fn)dlsym(
@@ -316,7 +314,7 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
   const int response_type = real_response_type(response);
   if (response_type == 6) return response_type;
 
-  if (customer_message == 0) {
+  if (response_error == 0) {
     customer_message = (customer_message_fn)dlsym(
       RTLD_NEXT,
       "_ZNK17storeservicescore20AuthenticateResponse15customerMessageEv"
@@ -341,11 +339,11 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
       RTLD_NEXT,
       "_ZNK17storeservicescore19StoreErrorCondition4whatEv"
     );
-    error_description = (error_description_fn)dlsym(
-      RTLD_NEXT,
-      "_ZNK17storeservicescore19StoreErrorCondition16errorDescriptionEv"
-    );
   }
+
+  if (response_error == 0) return response_type;
+  struct shared_ptr *error = response_error(response);
+  if (error == 0 || error->obj == 0) return response_type;
 
   if (customer_message != 0) {
     const char *message = std_string_data(customer_message(response));
@@ -356,53 +354,37 @@ int _ZNK17storeservicescore20AuthenticateResponse12responseTypeEv(
     }
   }
 
-  if (response_error != 0) {
-    struct shared_ptr *error = response_error(response);
-    if (error != 0 && error->obj != 0) {
-      int code = 0;
-      long external = 0;
-      long status = 0;
-      const char *message = 0;
+  int code = 0;
+  long external = 0;
+  long status = 0;
+  const char *message = 0;
 
-      if (error_code != 0) {
-        int *code_ptr = error_code(error->obj);
-        if (code_ptr != 0) code = *code_ptr;
-      }
-      if (external_error_code != 0) {
-        long *external_ptr = external_error_code(error->obj);
-        if (external_ptr != 0) external = *external_ptr;
-      }
-      if (auth_status != 0) {
-        long *status_ptr = auth_status(response);
-        if (status_ptr != 0) status = *status_ptr;
-      }
-      if (error_what != 0) {
-        const char *what = error_what(error->obj);
-        if (string_nonempty(what)) message = what;
-      }
-      if (!string_nonempty(message) && error_description != 0) {
-        union std_string desc_out;
-        error_description(&desc_out, error->obj);
-        const char *desc = std_string_data(&desc_out);
-        if (string_nonempty(desc)) message = desc;
-      }
-      if (!string_nonempty(message)) message = "none";
-
-      write_text("[!] auth error: code=");
-      write_number(code);
-      write_text(", external=");
-      write_long(external);
-      write_text(", status=");
-      write_long(status);
-      write_text(", message=");
-      write_text(message);
-      write_text("\n");
-      return response_type;
-    }
+  if (error_code != 0) {
+    int *code_ptr = error_code(error->obj);
+    if (code_ptr != 0) code = *code_ptr;
   }
+  if (external_error_code != 0) {
+    long *external_ptr = external_error_code(error->obj);
+    if (external_ptr != 0) external = *external_ptr;
+  }
+  if (auth_status != 0) {
+    long *status_ptr = auth_status(response);
+    if (status_ptr != 0) status = *status_ptr;
+  }
+  if (error_what != 0) {
+    const char *what = error_what(error->obj);
+    if (string_nonempty(what)) message = what;
+  }
+  if (!string_nonempty(message)) message = "none";
 
-  write_text("[!] auth failed: response type ");
-  write_number(response_type);
+  write_text("[!] auth error: code=");
+  write_number(code);
+  write_text(", external=");
+  write_long(external);
+  write_text(", status=");
+  write_long(status);
+  write_text(", message=");
+  write_text(message);
   write_text("\n");
   return response_type;
 }

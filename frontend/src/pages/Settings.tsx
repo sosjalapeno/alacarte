@@ -828,8 +828,9 @@ function TwoFaModal({ onClose, onCancel }: { onClose: () => void; onCancel: () =
     <Modal open={true} onClose={onCancel} className="max-w-sm p-6" label="Two-factor code">
       <h3 className="text-lg font-semibold mb-1">Two-factor code</h3>
       <p className="text-sm text-white/60 mb-4">
-        Apple sent a 6-digit verification code to your trusted devices.
-        Enter it below to complete sign-in.
+        Apple sent a 6-digit code to your trusted devices. If you only see
+        Allow / Not Me, generate a code from Settings → Apple ID → Sign-In
+        & Security → Get Verification Code.
       </p>
       <form onSubmit={submit} className="space-y-3">
         <Input
