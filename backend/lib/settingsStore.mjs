@@ -38,7 +38,7 @@ const DEFAULTS = {
 }
 
 const QUALITY_VALUES = new Set(['flac', 'alac', 'atmos', 'aac'])
-const NAMING_CONVENTION_VALUES = new Set(['apple', 'qobuz'])
+export const NAMING_CONVENTION_VALUES = new Set(['apple', 'qobuz'])
 
 export const AUTO_DOWNLOAD_FREQUENCY_VALUES = new Set([
   'auto',

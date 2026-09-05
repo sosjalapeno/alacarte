@@ -6,6 +6,7 @@ import {
   encryptSecret,
   readSettings,
   AUTO_DOWNLOAD_FREQUENCY_VALUES,
+  NAMING_CONVENTION_VALUES,
 } from '../lib/settingsStore.mjs'
 import {
   startWrapperLogin,
@@ -19,7 +20,7 @@ import {
 
 export const settingsRouter = express.Router()
 
-const WRITABLE_KEYS = new Set([
+export const WRITABLE_KEYS = new Set([
   'storefront',
   'language',
   'quality',
@@ -41,6 +42,7 @@ const WRITABLE_KEYS = new Set([
   'autoDownloadsEnabled',
   'autoDownloadCheckFrequency',
   'stagingInsideMusicLibrary',
+  'namingConvention',
 ])
 
 const EXPLICIT_FILTER_VALUES = new Set(['explicit', 'clean', 'both'])
@@ -67,6 +69,7 @@ settingsRouter.put('/', async (req, res) => {
       if (k === 'lyricsFormat' && !LYRICS_FORMAT_VALUES.has(v)) continue
       if (k === 'lyricsType' && !LYRICS_TYPE_VALUES.has(v)) continue
       if (k === 'quality' && !QUALITY_VALUES.has(v)) continue
+      if (k === 'namingConvention' && !NAMING_CONVENTION_VALUES.has(v)) continue
       if (k === 'autoDownloadCheckFrequency' && !AUTO_DOWNLOAD_FREQUENCY_VALUES.has(v)) continue
       if (k === 'navidromePassword') {
         if (v) {
