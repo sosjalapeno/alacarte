@@ -17,6 +17,18 @@ export const searchRouter = express.Router()
 
 const EMPTY = { albums: [], artists: [], songs: [], playlists: [] }
 
+function isMissingCatalogResource(err) {
+  if (err?.status === 404) return true
+  const msg = String(err?.message || '')
+  return /Apple API 404\b/.test(msg) || /resource not found/i.test(msg)
+}
+
+function clientSafeSearchError(err) {
+  const msg = String(err?.message || '')
+  if (/^Apple API \d+/.test(msg)) return 'Search failed'
+  return msg || 'Search failed'
+}
+
 function mapAlbum(x, resolveArtistId) {
   const relArtistId = x.relationships?.artists?.data?.[0]?.id || null
   return {
@@ -111,17 +123,9 @@ async function resolveAppleMusicLink(parsed, { storefront, language, explicitFil
   if (parsed.kind === 'album') {
     const raw = await getAlbum({ storefront: sf, id: parsed.id, language })
     const album = albumFromNormalized(normalizeAlbum(raw?.data?.[0]))
-    if (!album) {
-      const err = new Error('album not found')
-      err.status = 404
-      throw err
-    }
+    if (!album) return { ...EMPTY, storefront: sf }
     const albums = filterAlbumsByRating([album], explicitFilter)
-    if (!albums.length) {
-      const err = new Error('album not found')
-      err.status = 404
-      throw err
-    }
+    if (!albums.length) return { ...EMPTY, storefront: sf }
     return {
       ...EMPTY,
       albums,
@@ -136,24 +140,12 @@ async function resolveAppleMusicLink(parsed, { storefront, language, explicitFil
       const rawSong = await getSong({ storefront: sf, id: parsed.id, language })
       albumId = rawSong?.data?.[0]?.relationships?.albums?.data?.[0]?.id || null
     }
-    if (!albumId) {
-      const err = new Error('song album not found')
-      err.status = 404
-      throw err
-    }
+    if (!albumId) return { ...EMPTY, storefront: sf }
     const raw = await getAlbum({ storefront: sf, id: albumId, language })
     const album = albumFromNormalized(normalizeAlbum(raw?.data?.[0]))
-    if (!album) {
-      const err = new Error('album not found')
-      err.status = 404
-      throw err
-    }
+    if (!album) return { ...EMPTY, storefront: sf }
     const albums = filterAlbumsByRating([album], explicitFilter)
-    if (!albums.length) {
-      const err = new Error('album not found')
-      err.status = 404
-      throw err
-    }
+    if (!albums.length) return { ...EMPTY, storefront: sf }
     return {
       ...EMPTY,
       albums,
@@ -165,11 +157,7 @@ async function resolveAppleMusicLink(parsed, { storefront, language, explicitFil
   if (parsed.kind === 'artist') {
     const raw = await getArtist({ storefront: sf, id: parsed.id, language })
     const artistRaw = raw?.data?.[0]
-    if (!artistRaw) {
-      const err = new Error('artist not found')
-      err.status = 404
-      throw err
-    }
+    if (!artistRaw) return { ...EMPTY, storefront: sf }
     return {
       ...EMPTY,
       artists: [
@@ -189,11 +177,7 @@ async function resolveAppleMusicLink(parsed, { storefront, language, explicitFil
   if (parsed.kind === 'playlist') {
     const raw = await getPlaylist({ storefront: sf, id: parsed.id, language })
     const playlist = playlistFromNormalized(normalizePlaylist(raw?.data?.[0]))
-    if (!playlist) {
-      const err = new Error('playlist not found')
-      err.status = 404
-      throw err
-    }
+    if (!playlist) return { ...EMPTY, storefront: sf }
     return {
       ...EMPTY,
       playlists: [playlist],
@@ -232,10 +216,13 @@ searchRouter.get('/', async (req, res) => {
         })
         return res.json(resolved)
       } catch (err) {
-        const status =
-          err.status ||
-          (/Apple API 404\b/.test(err.message) ? 404 : 502)
-        return res.status(status).json({ error: err.message })
+        if (err.status === 400) {
+          return res.status(400).json({ error: err.message })
+        }
+        if (isMissingCatalogResource(err)) {
+          return res.json({ ...EMPTY, storefront })
+        }
+        return res.status(502).json({ error: clientSafeSearchError(err) })
       }
     }
 
@@ -270,6 +257,6 @@ searchRouter.get('/', async (req, res) => {
     const playlists = (r.playlists?.data || []).map((x) => mapPlaylist(x))
     res.json({ albums: filteredAlbums, artists, songs, playlists, storefront })
   } catch (err) {
-    res.status(502).json({ error: err.message })
+    res.status(502).json({ error: clientSafeSearchError(err) })
   }
 })
