@@ -1379,12 +1379,31 @@ async function runPartialAlbumFill({
     applyProgress(job, progressState, { message: 'Converting to FLAC' })
   }
 
+  const convention = settings?.namingConvention || 'apple'
   const finalDir = await computeFinalDir(
     MUSIC_ROOT,
     firstArtistName,
-    firstAlbumName.replace(/\s*\(\d{4}\)\s*$/, ''),
+    applyNamingConvention(firstAlbumName.replace(/\s*\(\d{4}\)\s*$/, ''), convention),
     job.year,
   )
+  if (convention === 'qobuz') {
+    for (const albumPath of trackAlbumPaths) {
+      const audioFiles = await fsp.readdir(albumPath).catch(() => [])
+      for (const fn of audioFiles) {
+        if (!/\.(flac|m4a|mp3|lrc)$/i.test(fn)) continue
+        const ext = path.extname(fn)
+        const stem = path.basename(fn, ext)
+        const newStem = applyNamingConvention(stem, 'qobuz')
+        if (newStem !== stem) {
+          const src = path.join(albumPath, fn)
+          const dst = path.join(albumPath, newStem + ext)
+          if (!(await fsp.stat(dst).catch(() => null))) {
+            await fsp.rename(src, dst)
+          }
+        }
+      }
+    }
+  }
   progressState.finalizeProgress = Math.max(progressState.finalizeProgress, 0.5)
   applyProgress(job, progressState, {
     message: 'Moving into library',
