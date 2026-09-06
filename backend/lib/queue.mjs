@@ -29,9 +29,11 @@ import {
   resolveArtistDir,
   sanitizeSegment,
 } from './folderLayout.mjs'
-import { getAlbumTrackPresence, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, stripTrailingYear } from './libraryIndex.mjs'
+import { getAlbumTrackPresence, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, songNameFromFilename, stripTrailingYear } from './libraryIndex.mjs'
 import { writePlaylistM3U } from './playlistExport.mjs'
 import { getDb } from './db.mjs'
+import { normalizeForMatchKey } from './libraryMatchKey.mjs'
+import { writeAudioIdentityTags } from './audioTags.mjs'
 import { probeWrapperPorts } from './wrapperHealth.mjs'
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
@@ -422,6 +424,10 @@ export async function enqueueAlbum({ albumId, storefront, quality, expectedArtis
     error: null,
     finalDir: null,
     missingTracks,
+    upc: meta?.upc || null,
+    trackIsrcs: (meta?.tracks || [])
+      .filter((t) => t.isrc)
+      .map((t) => ({ name: t.name || '', trackNumber: t.trackNumber || null, isrc: t.isrc })),
     stats: { total: missingTracks?.length || meta?.trackCount || 0, done: 0, failed: 0 },
   }
   state.jobs.set(id, job)
@@ -684,6 +690,8 @@ export async function enqueueSong({ songId, albumId, storefront, quality, follow
     message: 'Queued',
     error: null,
     finalDir: null,
+    isrc: trackIsrc || null,
+    upc: meta?.upc || null,
     stats: { total: 1, done: 0, failed: 0 },
   }
   state.jobs.set(id, job)
@@ -752,7 +760,46 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile }
+
+// Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
+// artist-name-independent anchor (collab albums import under a different
+// artist folder than Apple's album-level artistName). Fail-soft by design.
+function matchTrackForFile(fileName, tracks) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return null
+  const base = path.basename(fileName, path.extname(fileName))
+  const numMatch = base.match(/^(\d{1,3})[.\- ]/)
+  if (numMatch) {
+    const byNumber = tracks.find(
+      (t) => t && Number(t.trackNumber) === Number(numMatch[1]),
+    )
+    if (byNumber) return byNumber
+  }
+  const fileTitle = normalizeForMatchKey(songNameFromFilename(fileName)).toLowerCase()
+  if (!fileTitle) return null
+  return (
+    tracks.find(
+      (t) =>
+        t &&
+        normalizeForMatchKey(t.name || '').toLowerCase() === fileTitle,
+    ) || null
+  )
+}
+
+async function stampAlbumIdentityTags(dir, upc, tracks) {
+  try {
+    const entries = await fsp.readdir(dir)
+    for (const name of entries) {
+      if (!/\.flac$/i.test(name)) continue
+      const track = matchTrackForFile(name, tracks)
+      const isrc = track?.isrc || null
+      if (!isrc && !upc) continue
+      writeAudioIdentityTags(path.join(dir, name), { isrc, upc })
+    }
+  } catch (err) {
+    console.error('identity tag stamping failed:', err.message)
+  }
+}
 
 async function sweepStagingRoots() {
   const settings = await readSettings().catch(() => null)
@@ -1081,6 +1128,10 @@ async function runJob(job) {
       })
     }
 
+    if (!isSong && !isPlaylist) {
+      await stampAlbumIdentityTags(albumPath, job.upc, job.trackIsrcs)
+    }
+
     if (!isSong) {
       progressState.finalizeProgress = Math.max(progressState.finalizeProgress, 0.35)
       applyProgress(job, progressState, {
@@ -1150,6 +1201,14 @@ async function runJob(job) {
         }
       }
       await copyFolderArtIfAny(albumPath, finalDir)
+      if (job.isrc || job.upc) {
+        for (const fn of audioFiles) {
+          writeAudioIdentityTags(path.join(finalDir, fn), {
+            isrc: job.isrc,
+            upc: job.upc,
+          })
+        }
+      }
     } else {
       const rawAlbumName = applyNamingConvention(
         firstAlbum.name.replace(/\s*\(\d{4}\)\s*$/, ''),
@@ -1264,6 +1323,7 @@ async function runPartialAlbumFill({
   let firstArtistName = null
   let firstAlbumName = null
   const trackAlbumPaths = []
+  const albumPathToTrack = new Map()
 
   for (let i = 0; i < missing.length; i += 1) {
     throwIfCancelled(job)
@@ -1335,6 +1395,7 @@ async function runPartialAlbumFill({
     if (!firstArtistName) firstArtistName = artistEntry.name
     if (!firstAlbumName) firstAlbumName = albumEntry.name
     trackAlbumPaths.push(albumPath)
+    albumPathToTrack.set(albumPath, track)
 
     progressState.downloadDone = i + 1
     progressState.downloadPartial = 0
@@ -1372,6 +1433,12 @@ async function runPartialAlbumFill({
       })
       convertedTotal += conv.converted
       convertedFailed += conv.failed
+      const fillTrack = albumPathToTrack.get(albumPath)
+      await stampAlbumIdentityTags(
+        albumPath,
+        job.upc,
+        fillTrack ? [fillTrack] : null,
+      )
     }
     job.stats.converted = convertedTotal
     job.stats.flacFailed = convertedFailed
@@ -1483,6 +1550,7 @@ async function runLibraryPlaylistFill({
     })
 
     let albumCatalogId = null
+    let fillTrackIsrc = null
     try {
       const raw = await getSong({
         storefront: job.storefront,
@@ -1490,6 +1558,7 @@ async function runLibraryPlaylistFill({
         language: settings.language,
       })
       const songData = raw?.data?.[0]
+      fillTrackIsrc = songData?.attributes?.isrc || null
       const albumRel = songData?.relationships?.albums?.data?.[0]?.id
       if (albumRel) albumCatalogId = String(albumRel)
     } catch (err) {
@@ -1559,6 +1628,11 @@ async function runLibraryPlaylistFill({
       jobStaging: trackStaging,
       onProgress: () => {},
     })
+    if (fillTrackIsrc) {
+      for (const importedPath of importedHere) {
+        writeAudioIdentityTags(importedPath, { isrc: fillTrackIsrc })
+      }
+    }
     for (const p of importedHere) importedPaths.push(p)
 
     progressState.downloadDone = i + 1
