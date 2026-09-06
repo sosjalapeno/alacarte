@@ -17,6 +17,11 @@ import {
   clearHardBlock,
   getHardBlock,
 } from '../lib/wrapperLogin.mjs'
+import {
+  startTagBackfill,
+  getTagBackfillStatus,
+  stopTagBackfill,
+} from '../lib/tagBackfill.mjs'
 
 export const settingsRouter = express.Router()
 
@@ -199,4 +204,20 @@ settingsRouter.delete('/media-user-token', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+settingsRouter.get('/tag-backfill', (_req, res) => {
+  res.json(getTagBackfillStatus())
+})
+
+settingsRouter.post('/tag-backfill', async (req, res) => {
+  try {
+    res.json(await startTagBackfill({ dryRun: Boolean(req.body?.dryRun) }))
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message })
+  }
+})
+
+settingsRouter.post('/tag-backfill/stop', (_req, res) => {
+  res.json(stopTagBackfill())
 })

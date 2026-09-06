@@ -15,6 +15,7 @@ RUN npm install --omit=dev --no-audit --no-fund
 COPY backend/server.mjs ./
 COPY backend/routes ./routes
 COPY backend/lib ./lib
+COPY backend/scripts ./scripts
 COPY --from=frontend-build /app/backend/public ./public
 
 # Source stage for Node 22 runtime binaries

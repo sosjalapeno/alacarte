@@ -131,6 +131,16 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
   }, [])
 
   useEventStream((type, data) => {
+    if (type === 'tags.backfill.progress') {
+      if (data?.done) {
+        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+        refreshTimerRef.current = setTimeout(() => {
+          refreshTimerRef.current = null
+          void loadSnapshot(true)
+        }, 250)
+      }
+      return
+    }
     if (type !== 'job.update' || data?.status !== 'done') return
     const albumId = String(data?.albumId || '')
     if (albumId) {

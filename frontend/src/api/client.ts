@@ -366,6 +366,22 @@ export type CloudDownloadAllProgress = {
   done: boolean
 }
 
+export type TagBackfillStatus = {
+  running: boolean
+  dryRun: boolean
+  scanned: number
+  total: number
+  stamped: number
+  skipped: number
+  noMatch: number
+  failed: number
+  current: string | null
+  startedAt: number | null
+  finishedAt: number | null
+  stopRequested: boolean
+  error: string | null
+}
+
 type UnauthorizedHandler = (info: { needsSetup: boolean }) => void
 
 let onUnauthorized: UnauthorizedHandler | null = null
@@ -773,6 +789,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ kind, quality }),
     }),
+  tagBackfillStatus: () => http<TagBackfillStatus>('/api/settings/tag-backfill'),
+  startTagBackfill: (dryRun = false) =>
+    http<TagBackfillStatus>('/api/settings/tag-backfill', {
+      method: 'POST',
+      body: JSON.stringify({ dryRun }),
+    }),
+  stopTagBackfill: () =>
+    http<{ ok: boolean }>('/api/settings/tag-backfill/stop', { method: 'POST' }),
 }
 
 export function artworkUrl(

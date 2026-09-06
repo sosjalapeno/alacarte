@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   AlertCircle,
   ChevronDown,
@@ -10,11 +10,12 @@ import {
   FolderOpen,
   Radar,
   ShieldCheck,
+  Tags,
   User as UserIcon,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
-import { api, type EffectiveCheckInterval, type PublicSettings } from '../api/client'
+import { api, type EffectiveCheckInterval, type PublicSettings, type TagBackfillStatus } from '../api/client'
 import { setAppSettingsCache } from '../hooks/useAppSettings'
 import { useEventStream } from '../hooks/useEventStream'
 
@@ -23,6 +24,7 @@ import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Input } from '../components/Input'
 import { Modal } from '../components/Modal'
+import { ProgressBar } from '../components/ProgressBar'
 import { StaggeredList, StaggeredItem } from '../components/StaggeredList'
 import { cx } from '../lib/cx'
 
@@ -427,6 +429,10 @@ export function SettingsPage() {
               </label>
             </div>
           </SettingsCard>
+        </StaggeredItem>
+
+        <StaggeredItem>
+          <TagBackfillCard flash={flash} />
         </StaggeredItem>
 
         <StaggeredItem>
@@ -1352,5 +1358,164 @@ function HintSlot({ hint }: { hint: { tone: HintTone; text: string } | null }) {
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+function TagBackfillCard({ flash }: { flash: (msg: string) => void }) {
+  const [status, setStatus] = useState<TagBackfillStatus | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(() => {
+    api.tagBackfillStatus().then(setStatus).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    if (!status?.running) return
+    const timer = setInterval(refresh, 2000)
+    return () => clearInterval(timer)
+  }, [status?.running, refresh])
+
+  const start = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setStatus(await api.startTagBackfill(false))
+      setConfirmOpen(false)
+      flash('Tag backfill started')
+    } catch (err: any) {
+      setError(err?.message || 'Failed to start backfill')
+      setConfirmOpen(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const stop = async () => {
+    setBusy(true)
+    try {
+      await api.stopTagBackfill()
+    } catch {}
+    setBusy(false)
+    refresh()
+  }
+
+  const running = Boolean(status?.running)
+  const pct =
+    status && status.total > 0
+      ? Math.min(100, Math.round((status.scanned / status.total) * 100))
+      : 0
+
+  return (
+    <SettingsCard icon={<Tags className="h-4 w-4" />} title="Library tags">
+      <div className="space-y-4">
+        <div className="text-sm text-white/55">
+          Downloads are stamped with ISRC and barcode tags so duplicate
+          detection works even when folder names don&apos;t match Apple&apos;s
+          metadata. Backfilling matches every untagged FLAC in your library
+          against Apple Music and updates the files in place.
+        </div>
+
+        {running && (
+          <div className="space-y-2">
+            <ProgressBar
+              value={pct}
+              label={`${pct}% · scanned ${status!.scanned}/${status!.total}`}
+            />
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="ok">{status!.stamped} stamped</Badge>
+              <Badge>{status!.skipped} already tagged</Badge>
+              <Badge variant="warn">{status!.noMatch} unmatched</Badge>
+              {status!.failed > 0 && (
+                <Badge variant="bad">{status!.failed} failed</Badge>
+              )}
+            </div>
+            {status!.current && (
+              <div
+                className="truncate text-xs text-white/40"
+                title={status!.current}
+              >
+                {status!.current}
+              </div>
+            )}
+            {status!.stopRequested && (
+              <div className="text-xs text-white/45">
+                Stopping after the current file…
+              </div>
+            )}
+          </div>
+        )}
+
+        {!running && status?.finishedAt && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant="ok">Last run: {status.stamped} stamped</Badge>
+            <Badge>{status.skipped} already tagged</Badge>
+            <Badge variant="warn">{status.noMatch} unmatched</Badge>
+            {status.failed > 0 && <Badge variant="bad">{status.failed} failed</Badge>}
+          </div>
+        )}
+
+        {error && <Badge variant="bad">{error}</Badge>}
+
+        <div>
+          {running ? (
+            <Button
+              onClick={stop}
+              disabled={busy || status!.stopRequested}
+              className="border-rose-300/30 bg-rose-500/10 text-rose-200 hover:border-rose-300/50 hover:bg-rose-500/20 hover:text-rose-100"
+            >
+              {status!.stopRequested ? 'Stopping…' : 'Stop backfill'}
+            </Button>
+          ) : (
+            <Button onClick={() => setConfirmOpen(true)}>
+              <Tags className="h-4 w-4" />
+              Backfill library tags
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        label="Backfill library tags"
+        placement="center"
+        className="!max-w-[36rem]"
+      >
+        <div className="p-6">
+          <div className="flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[rgba(var(--accent),0.25)] bg-[rgba(var(--accent),0.12)] text-[rgb(var(--accent))]">
+              <Tags className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-wider text-white/55">
+                Backfill library tags
+              </div>
+              <h2 className="mt-1 text-lg font-semibold text-white">
+                Scan your library for missing tags?
+              </h2>
+            </div>
+          </div>
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              onClick={() => setConfirmOpen(false)}
+              disabled={busy}
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+            <Button onClick={start} disabled={busy}>
+              <Tags className="h-4 w-4" />
+              {busy ? 'Starting…' : 'Start backfill'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </SettingsCard>
   )
 }
