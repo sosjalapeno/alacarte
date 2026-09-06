@@ -183,7 +183,7 @@ export function AuthScreen({
               </h1>
               <p className="text-sm text-white/55 mt-1">
                 {isSetup
-                  ? 'Pick a username and password to lock down your ALACarte instance.'
+                  ? 'Pick a username and password.'
                   : 'Sign in to continue.'}
               </p>
             </div>

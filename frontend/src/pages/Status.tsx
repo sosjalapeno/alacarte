@@ -55,12 +55,8 @@ export function StatusPage() {
       <section className="space-y-3">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
-            Live system visibility
+            Status
           </h1>
-          <p className="max-w-3xl text-sm text-white/60 md:text-base">
-            Watch backend health, download progress, wrapper sign-in activity, and
-            live job logs in one place.
-          </p>
         </div>
       </section>
 
@@ -71,7 +67,7 @@ export function StatusPage() {
           detail={
             latestEventAt
               ? `Last event ${formatRelativeTime(latestEventAt)}`
-              : 'Waiting for live backend events'
+              : 'No events yet'
           }
           tone={streamTone(streamStatus)}
           icon={
@@ -85,7 +81,7 @@ export function StatusPage() {
           detail={
             activeJobs[0]?.message ||
             activeJobs[0]?.currentTrack ||
-            (activeJobs.length > 0 ? 'Downloads are currently running' : 'Nothing downloading right now')
+            (activeJobs.length > 0 ? 'Downloads are currently running' : 'No active jobs')
           }
           tone={activeJobs.length > 0 ? 'info' : 'success'}
           icon={activeJobs.length > 0 ? Loader2 : CheckCircle2}
@@ -107,9 +103,6 @@ export function StatusPage() {
               <div className="flex items-center gap-2 text-sm font-medium text-white/80">
                 <Activity className="h-4 w-4 text-accent" />
                 System health
-              </div>
-              <div className="mt-1 text-sm text-white/55">
-                The same health surface as the pill, expanded with detailed backend checks.
               </div>
             </div>
             <div className="grid gap-2 px-5 py-4">
@@ -146,16 +139,13 @@ export function StatusPage() {
                 <Loader2 className="h-4 w-4 text-accent" />
                 Active work
               </div>
-              <div className="mt-1 text-sm text-white/55">
-                Current downloads and imports, kept lightweight so the feed can stay focused on milestones.
-              </div>
             </div>
             <div className="space-y-3 px-5 py-4">
               {loading ? (
                 <div className="text-sm text-white/55">Loading recent job state…</div>
               ) : activeJobs.length === 0 ? (
                 <div className="rounded-[18px] border border-white/[0.05] bg-white/[0.025] px-4 py-4 text-sm text-white/55">
-                  No active jobs right now.
+                  No active jobs.
                 </div>
               ) : (
                 activeJobs.slice(0, 6).map((job) => (
@@ -189,9 +179,6 @@ export function StatusPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-white">Activity feed</h2>
-                <p className="mt-1 text-sm text-white/55">
-                  Important backend milestones, warnings, and failures with less raw noise.
-                </p>
               </div>
               <Badge
                 variant={feedItems[0]?.severity === 'error' ? 'bad' : 'accent'}
@@ -203,7 +190,7 @@ export function StatusPage() {
 
             {feedItems.length === 0 ? (
               <Card className="p-6 text-sm text-white/55">
-                No activity yet. Start a download or sign-in flow to populate the feed.
+                No activity yet.
               </Card>
             ) : (
               <AnimatePresence initial={false}>
@@ -238,9 +225,6 @@ export function StatusPage() {
                   </div>
                   <div>
                     <div className="text-sm font-medium text-white/85">Backend log</div>
-                    <div className="mt-0.5 text-xs text-white/45">
-                      Live SSE-backed console for jobs and wrapper activity.
-                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -273,7 +257,7 @@ export function StatusPage() {
             >
               {terminalLines.length === 0 ? (
                 <div className="flex h-full min-h-[320px] items-center justify-center px-6 text-center text-sm text-white/45">
-                  Waiting for backend events. When downloads or wrapper activity starts, logs will stream here.
+                  Waiting for backend events.
                 </div>
               ) : (
                 <div className="space-y-1.5">

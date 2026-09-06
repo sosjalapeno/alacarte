@@ -341,9 +341,6 @@ export function CloudLibraryPage() {
           <h1 className="text-2xl font-semibold tracking-tight text-white md:text-3xl">
             Cloud
           </h1>
-          <p className="max-w-2xl text-sm text-white/60 md:text-base">
-            Everything saved in your Apple Music library — download what you want, or grab the lot in one go.
-          </p>
         </div>
         <div className="flex w-full flex-wrap items-center justify-start gap-2 md:w-auto md:justify-end">
           <Button onClick={refresh} disabled={activeState.loading} className="whitespace-nowrap">

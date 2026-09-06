@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { CheckCircle2, AlertCircle, Loader2, XCircle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -38,34 +38,8 @@ function SkeletonCard() {
 export function HomePage() {
   const { active, recent, loading } = useQueue()
   const recentList = recent.slice(0, 50)
-  const [quality, setQuality] = useState<string | null>(null)
   const [confirmAbortAll, setConfirmAbortAll] = useState(false)
   const [abortingAll, setAbortingAll] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    api
-      .settings()
-      .then((settings) => {
-        if (!cancelled) setQuality(settings.quality)
-      })
-      .catch(() => {
-        if (!cancelled) setQuality(null)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const subtitle =
-    quality === 'alac'
-      ? 'Search, pick an album, and download Apple Lossless (ALAC) straight into your music library.'
-      : quality === 'atmos'
-        ? 'Search, pick an album, and download Dolby Atmos when available, with FLAC fallback.'
-        : quality === 'aac'
-          ? 'Search, pick an album, and download AAC straight into your music library.'
-          : 'Search, pick an album, and download lossless FLAC straight into your music library.'
 
   return (
     <div className="mx-auto w-full max-w-6xl pt-4 md:pt-6 space-y-8">
@@ -73,9 +47,6 @@ export function HomePage() {
         <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">
           Good listening
         </h1>
-        <p className="text-white/60 max-w-prose mt-1">
-          {subtitle}
-        </p>
       </section>
 
       <AnimatePresence mode="wait">

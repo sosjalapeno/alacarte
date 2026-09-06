@@ -146,9 +146,6 @@ export function NavDrawer({ open, onClose }: Props) {
             </div>
             <div className="min-w-0">
               <h2 className="text-base font-semibold text-white">Sign out?</h2>
-              <p className="mt-1 text-sm text-white/60">
-                You'll need to sign in again next time you open ALACarte.
-              </p>
             </div>
           </div>
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

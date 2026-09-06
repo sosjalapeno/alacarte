@@ -19,7 +19,7 @@ export function HealthPill({ health, loading, variant = 'default' }: Props) {
         <Badge
           variant="warn"
           className={shellClass}
-          title="The download wrapper recently stalled and was auto-recovered. The queue is moving normally."
+          title="Download wrapper stalled and was auto-recovered."
         >
           ● Recovered
         </Badge>
