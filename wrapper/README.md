@@ -26,3 +26,18 @@ The contents come from the project's GitHub Releases. If you need a different ar
 ## Login
 
 The web UI handles first-time login automatically. Go to Settings → Apple Account, enter your credentials, and the wrapper will authenticate. Credentials are cached inside `rootfs/data` (volume-mounted to `./data/wrapper` by the parent compose file) so you only need to sign in once.
+
+## Security keys
+
+Apple disables 6-digit verification codes while hardware security keys are
+enabled on an Apple ID ("these are the only ways to sign in": the physical key
+or a nearby trusted device — see Apple's security keys support article). The
+wrapper's store client is the same stack as Apple Music on Android and has no
+security-key sign-in path, so accounts protected by keys will wait for a code
+Apple never issues. To sign in: temporarily remove the security keys at
+account.apple.com (Sign-In and Security → Security Keys), sign in here once,
+then re-enable them.
+
+Apple reports this failure with the generic "Check the account information you
+entered and try again." message, which makes a security-key account easy to
+mistake for a wrong password.

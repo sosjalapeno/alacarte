@@ -1,7 +1,14 @@
 const RESPONSE_TYPE_HINTS = {
+  0: 'Apple rejected the sign-in attempt before completing authentication. Double-check the credentials, and if your Apple ID uses hardware security keys, remove them temporarily at account.apple.com first.',
   4: 'Apple sign-in failed inside StoreServices (wrapper response type 4). This is a generic failure code, not proof that the email or password is wrong. Wait before retrying, then check Apple Music on the same network.',
 }
-// TODO: response types 0/1/2/3/5/7 are still empirically unknown.
+// TODO: response types 1/2/3/5/7 are still empirically unknown.
+
+// Security keys disable Apple's 6-digit verification codes entirely, and the
+// wrapper's store client (like Apple Music on Android) has no security-key
+// sign-in path — so accounts protected by keys cannot complete sign-in here.
+export const TWO_FA_HINT =
+  'Apple sends the code to your trusted Apple devices (Settings → Apple ID → Sign-In & Security → Get Verification Code). If your Apple ID uses hardware security keys, Apple never issues a code — temporarily remove them at account.apple.com, sign in here, then re-enable them.'
 
 function cleanWrapperDiagnostic(value, maxLength = 320) {
   const cleaned = String(value || '').replace(/\s+/g, ' ').trim()
@@ -143,7 +150,7 @@ export function extractWrapperFailureReason(s) {
       return `Your Apple Account is disabled. ${message || 'Reset it at iforgot.apple.com, then try again.'}`
     }
     if (/account information/i.test(title)) {
-      return 'Apple rejected the email or password. Double-check both and try again.'
+      return 'Apple rejected the email or password. Double-check both and try again. If the password is correct, check whether your Apple ID uses hardware security keys — Apple blocks those from this sign-in; they must be removed temporarily at account.apple.com.'
     }
     if (/locked/i.test(title)) {
       return `Apple Account locked. ${message || 'Reset it at iforgot.apple.com before retrying.'}`
@@ -157,7 +164,7 @@ export function extractWrapperFailureReason(s) {
 
   for (let i = lines.length - 1; i >= 0; i--) {
     if (/\[!\] Failed to get 2FA Code/i.test(lines[i])) {
-      return '2FA code wasn’t entered in time. Try again.'
+      return 'No 2FA code was entered within the sign-in window. Get one from a trusted Apple device (Settings → Apple ID → Sign-In & Security → Get Verification Code) and retry. If your Apple ID uses hardware security keys, Apple never issues codes — remove them temporarily at account.apple.com, sign in here, then re-enable them.'
     }
   }
 

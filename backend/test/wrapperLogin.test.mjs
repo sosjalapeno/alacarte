@@ -10,6 +10,7 @@ import {
   logsIndicateTwoFa,
   parseAttachChunk,
   redactWrapperOutput,
+  TWO_FA_HINT,
 } from '../lib/wrapperLoginDiagnostics.mjs'
 import { validate2faCode } from '../lib/wrapperLogin.mjs'
 
@@ -40,10 +41,39 @@ test('keeps a specific Apple account dialog ahead of generic diagnostics', () =>
     [.] response type 4
   `)
 
-  assert.equal(
-    reason,
-    'Apple rejected the email or password. Double-check both and try again.',
-  )
+  assert.match(reason, /Apple rejected the email or password/)
+  assert.match(reason, /hardware security keys/)
+  assert.match(reason, /account\.apple\.com/)
+})
+
+test('explains the security-key dead end when the 2FA code times out', () => {
+  const reason = extractWrapperFailureReason(`
+    [.] credentialHandler: {title: , message: , 2FA: true}
+    [!] Enter your 2FA code into rootfs/data/data/com.apple.android.music/files/2fa.txt
+    [!] Failed to get 2FA Code in 60s. Exiting...
+  `)
+
+  assert.match(reason, /No 2FA code was entered/)
+  assert.match(reason, /Get Verification Code/)
+  assert.match(reason, /hardware security keys/)
+  assert.doesNotMatch(reason, /just try again/i)
+})
+
+test('describes response type 0 as a pre-completion rejection', () => {
+  const reason = extractWrapperFailureReason(`
+    [.] credentialHandler: {title: , message: , 2FA: false}
+    [.] response type 0
+    [!] login failed
+  `)
+
+  assert.match(reason, /before completing authentication/)
+  assert.match(reason, /hardware security keys/)
+})
+
+test('2FA hint tells users where codes come from and about security keys', () => {
+  assert.match(TWO_FA_HINT, /Get Verification Code/)
+  assert.match(TWO_FA_HINT, /hardware security keys/)
+  assert.match(TWO_FA_HINT, /account\.apple\.com/)
 })
 
 test('redacts credentials before collecting or exposing wrapper output', () => {

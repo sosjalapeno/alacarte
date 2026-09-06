@@ -82,6 +82,24 @@ static char *find_char(char *text, char wanted) {
   return 0;
 }
 
+/* The worker's only sleep() caller is the 2FA code-file poll loop (20 tries),
+   so stretching its 3-second interval widens the code-entry window to 4
+   minutes instead of the hardcoded 60 seconds. */
+static unsigned int map_sleep_seconds(unsigned int seconds) {
+  return seconds == 3 ? 12 : seconds;
+}
+
+unsigned int sleep(unsigned int seconds) {
+  typedef unsigned int (*sleep_fn)(unsigned int);
+  static sleep_fn real_sleep;
+
+  if (real_sleep == 0) {
+    real_sleep = (sleep_fn)dlsym(RTLD_NEXT, "sleep");
+  }
+  if (real_sleep == 0) return 0;
+  return real_sleep(map_sleep_seconds(seconds));
+}
+
 static void write_text(const char *text) {
   const size_type length = bounded_length(text, 1024);
   if (length != 0) (void)write(2, text, length);
@@ -439,6 +457,11 @@ int main(void) {
   assert(strcmp(password, "password:with:colons123456") == 0);
   assert(guards[0] == guard_before);
   assert(guards[1] == guard_after);
+
+  assert(map_sleep_seconds(3) == 12);
+  assert(map_sleep_seconds(1) == 1);
+  assert(map_sleep_seconds(0) == 0);
+  assert(map_sleep_seconds(5) == 5);
 
   printf("ok\n");
   return 0;

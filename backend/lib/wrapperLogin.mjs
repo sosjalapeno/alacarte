@@ -13,6 +13,7 @@ import {
   logsIndicateTwoFa,
   parseAttachChunk,
   redactWrapperOutput,
+  TWO_FA_HINT,
 } from './wrapperLoginDiagnostics.mjs'
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' })
@@ -267,9 +268,24 @@ async function writeCodeIntoContainer(container, code) {
 }
 
 const LOG_DRAIN_MS = 250
+// Once 2FA starts we are waiting on the user, not on Apple. Cover the
+// wrapper's extended code-entry window (4 minutes) with a generous margin.
+const TWO_FA_WINDOW_MS = 10 * 60_000
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function markTwoFaDetected() {
+  if (!active || active.twoFaDetected) return
+  active.twoFaDetected = true
+  clearTimeout(active.overallTimeout)
+  active.overallTimeout = setTimeout(() => {
+    if (active && !active.terminated) {
+      finalizeFailure('Timed out waiting for the 2FA code')
+    }
+  }, TWO_FA_WINDOW_MS)
+  emitStatus({ phase: '2fa-required', hint: TWO_FA_HINT })
 }
 
 function containerHasStarted(info) {
@@ -412,11 +428,13 @@ async function runLoginFlow() {
   await container.start()
   emitStatus({ phase: 'signing-in' })
 
-  active.overallTimeout = setTimeout(() => {
-    if (active && !active.terminated) {
-      finalizeFailure('Sign-in timed out')
-    }
-  }, 180_000)
+  if (!active.twoFaDetected) {
+    active.overallTimeout = setTimeout(() => {
+      if (active && !active.terminated) {
+        finalizeFailure('Sign-in timed out')
+      }
+    }, 180_000)
+  }
 }
 
 function checkCollected() {
@@ -424,8 +442,7 @@ function checkCollected() {
   const s = active.collected
 
   if (!active.twoFaDetected && logsIndicateTwoFa(s)) {
-    active.twoFaDetected = true
-    emitStatus({ phase: '2fa-required' })
+    markTwoFaDetected()
   }
 
   if (/account info cached successfully/i.test(s)) {
@@ -461,8 +478,7 @@ async function handleContainerExit(result) {
   if (!active || active.terminated) return
   if (/account info cached successfully/i.test(active.collected)) return
   if (!active.twoFaDetected && logsIndicateTwoFa(active.collected)) {
-    active.twoFaDetected = true
-    emitStatus({ phase: '2fa-required' })
+    markTwoFaDetected()
   }
 
   let reason = extractWrapperFailureReason(active.collected)
