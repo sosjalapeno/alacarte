@@ -29,7 +29,8 @@ import {
   resolveArtistDir,
   sanitizeSegment,
 } from './folderLayout.mjs'
-import { getAlbumTrackPresence, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, purgePlaylistExportsSharingIds, stripTrailingYear } from './libraryIndex.mjs'
+import { getAlbumTrackPresence, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, stripTrailingYear } from './libraryIndex.mjs'
+import { writePlaylistM3U } from './playlistExport.mjs'
 import { getDb } from './db.mjs'
 import { probeWrapperPorts } from './wrapperHealth.mjs'
 
@@ -1099,36 +1100,56 @@ async function runJob(job) {
 
     let finalDir
     if (isSong) {
-      const artistDir = await resolveArtistDir(MUSIC_ROOT, firstArtist.name)
-      const singlesDir = path.join(MUSIC_ROOT, artistDir, 'Singles')
-      await ensureDir(singlesDir)
-      const flacName = finalFiles.find((f) => /\.flac$/i.test(f))
-      const srcName = flacName || finalFiles.find((f) => /\.(m4a|mp3)$/i.test(f))
-      if (!srcName) throw new Error('no audio file to move')
-      const ext = path.extname(srcName)
-      const rawTitle = applyNamingConvention(job.albumTitle, convention)
-      const targetName = sanitizeSegment(rawTitle) + ext
-      const srcPath = path.join(albumPath, srcName)
-      const destPath = path.join(singlesDir, targetName)
+      // Songs import straight into their parent album folder so every
+      // download lands in the same Artist/Album/Track structure with the
+      // original amdp filenames (and their embedded metadata) preserved.
+      const albumDirName = firstAlbum.name.replace(/\s*\(\d{4}\)\s*$/, '')
+      const rawAlbumName = applyNamingConvention(albumDirName, convention)
+      finalDir = await computeFinalDir(
+        MUSIC_ROOT,
+        firstArtist.name,
+        rawAlbumName,
+        job.year,
+      )
+      await ensureDir(finalDir)
+
+      if (convention === 'qobuz') {
+        for (const fn of finalFiles) {
+          if (!/\.(flac|m4a|mp3|lrc)$/i.test(fn)) continue
+          const ext = path.extname(fn)
+          const stem = path.basename(fn, ext)
+          const newStem = applyNamingConvention(stem, 'qobuz')
+          if (newStem !== stem) {
+            const src = path.join(albumPath, fn)
+            const dst = path.join(albumPath, newStem + ext)
+            if (!(await fsp.stat(dst).catch(() => null))) {
+              await fsp.rename(src, dst)
+            }
+          }
+        }
+      }
+
+      const movedFiles = await fsp.readdir(albumPath)
+      const audioFiles = movedFiles.filter((f) => /\.(flac|m4a|mp3)$/i.test(f))
+      if (audioFiles.length === 0) throw new Error('no audio file to move')
       progressState.finalizeProgress = Math.max(progressState.finalizeProgress, 0.7)
       applyProgress(job, progressState, {
         message: 'Moving into library',
         currentTrack: null,
       })
-      await moveFileSafe(srcPath, destPath)
-
-      const srcBase = path.basename(srcName, path.extname(srcName))
-      const destBase = path.basename(targetName, path.extname(targetName))
-      const srcLrcPath = path.join(albumPath, `${srcBase}.lrc`)
-      const destLrcPath = path.join(singlesDir, `${destBase}.lrc`)
-      const hasLrc = await fsp
-        .stat(srcLrcPath)
-        .then((s) => s.isFile())
-        .catch(() => false)
-      if (hasLrc) {
-        await moveFileSafe(srcLrcPath, destLrcPath)
+      for (const fn of audioFiles) {
+        await moveFileSafe(path.join(albumPath, fn), path.join(finalDir, fn))
+        const srcBase = path.basename(fn, path.extname(fn))
+        const srcLrcPath = path.join(albumPath, `${srcBase}.lrc`)
+        const hasLrc = await fsp
+          .stat(srcLrcPath)
+          .then((s) => s.isFile())
+          .catch(() => false)
+        if (hasLrc) {
+          await moveFileSafe(srcLrcPath, path.join(finalDir, `${srcBase}.lrc`))
+        }
       }
-      finalDir = singlesDir
+      await copyFolderArtIfAny(albumPath, finalDir)
     } else {
       const rawAlbumName = applyNamingConvention(
         firstAlbum.name.replace(/\s*\(\d{4}\)\s*$/, ''),
@@ -1945,15 +1966,10 @@ function detectAmdpRemuxError(output) {
 }
 
 async function importPlaylistTracks({ job, jobStaging, onProgress }) {
+  const settings = await readSettings().catch(() => null)
+  const convention = settings?.namingConvention || 'apple'
   const candidates = await collectAudioFiles(jobStaging)
   const imported = []
-  const fromPlaylistJob = job?.kind === 'playlist'
-  let playlistTracksDir = null
-  if (fromPlaylistJob) {
-    const segment = sanitizeSegment(job.albumTitle || 'Playlist')
-    playlistTracksDir = path.join(MUSIC_ROOT, 'Playlists', segment)
-    await ensureDir(playlistTracksDir)
-  }
 
   for (let i = 0; i < candidates.length; i++) {
     const srcPath = candidates[i].path
@@ -1967,22 +1983,21 @@ async function importPlaylistTracks({ job, jobStaging, onProgress }) {
     const artistName = tags.artist || parsed.artist || job.artist || 'Unknown Artist'
     const albumName = tags.album || parsed.album || null
 
+    // Every playlist track imports into the same Artist/Album structure as
+    // album and song downloads; the playlist m3u8 references these files.
     let destDir
     let targetName = path.basename(srcPath)
-    if (fromPlaylistJob) {
-      destDir = playlistTracksDir
-      const ext = path.extname(srcPath)
-      const titled = sanitizeSegment(
-        tags.title || path.basename(srcPath, ext) || `track_${i + 1}`,
-      )
-      targetName = `${String(i + 1).padStart(3, '0')} ${titled}${ext}`
-    } else if (albumName) {
+    if (albumName) {
       destDir = await computeFinalDir(
         MUSIC_ROOT,
         artistName,
-        stripTrailingYear(albumName),
+        applyNamingConvention(stripTrailingYear(albumName), convention),
         null,
       )
+      if (convention === 'qobuz') {
+        const ext = path.extname(targetName)
+        targetName = `${applyNamingConvention(path.basename(targetName, ext), 'qobuz')}${ext}`
+      }
     } else {
       const artistDir = await resolveArtistDir(MUSIC_ROOT, artistName)
       destDir = path.join(MUSIC_ROOT, artistDir, 'Singles')
@@ -2095,45 +2110,6 @@ async function moveLyricsSidecars(srcAudioPath, destAudioPath) {
   }
 }
 
-async function unlinkPlaylistImageSidecars(playlistsDir, base) {
-  for (const ext of ['.jpg', '.jpeg', '.png', '.webp']) {
-    await fsp.unlink(path.join(playlistsDir, `${base}${ext}`)).catch(() => null)
-  }
-}
-
-async function writePlaylistCoverFromAppleTemplate(artworkTemplate, absImagePathHint) {
-  const urlStr = artworkUrl(artworkTemplate, 1200)
-  if (!urlStr) return
-  try {
-    const res = await fetch(urlStr, {
-      redirect: 'follow',
-      headers: { Accept: 'image/*', 'User-Agent': 'ALACarte/playlist-artwork' },
-    })
-    if (!res.ok) return
-    const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.length < 500) return
-    const dot = absImagePathHint.lastIndexOf('.')
-    const basePath = dot > 0 ? absImagePathHint.slice(0, dot) : absImagePathHint
-    let dest
-    if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-      dest = `${basePath}.jpg`
-    } else if (
-      buf.length >= 8 &&
-      buf[0] === 0x89 &&
-      buf[1] === 0x50 &&
-      buf[2] === 0x4e &&
-      buf[3] === 0x47
-    ) {
-      dest = `${basePath}.png`
-    } else if (buf.length >= 12 && buf.toString('ascii', 8, 12) === 'WEBP') {
-      dest = `${basePath}.webp`
-    } else {
-      return
-    }
-    await fsp.writeFile(dest, buf, { mode: 0o664 })
-  } catch {}
-}
-
 async function copyFolderArtIfAny(srcDir, destDir) {
   const src = path.join(srcDir, 'folder.jpg')
   const exists = await fsp
@@ -2148,49 +2124,6 @@ async function copyFolderArtIfAny(srcDir, destDir) {
     .catch(() => false)
   if (destExists) return
   await fsp.copyFile(src, dest).catch(() => {})
-}
-
-async function writePlaylistM3U({
-  playlistName,
-  playlistId,
-  libraryPlaylistId,
-  tracks,
-  artworkTemplate,
-}) {
-  const playlistsDir = path.join(MUSIC_ROOT, 'Playlists')
-  await ensureDir(playlistsDir)
-  const base = sanitizeSegment(playlistName || 'Playlist')
-  const filePath = path.join(playlistsDir, `${base}.m3u8`)
-
-  await purgePlaylistExportsSharingIds(MUSIC_ROOT, {
-    playlistId,
-    libraryPlaylistId,
-    keepAbsPath: filePath,
-  })
-
-  const lines = ['#EXTM3U', `#PLAYLIST:${playlistName || 'Playlist'}`]
-  if (playlistId) {
-    lines.push(`#ALACARTE_PLAYLIST_ID:${playlistId}`)
-  }
-  if (libraryPlaylistId) {
-    lines.push(`#ALACARTE_LIBRARY_PLAYLIST_ID:${libraryPlaylistId}`)
-  }
-  for (const absPath of tracks) {
-    const rel = path
-      .relative(playlistsDir, absPath)
-      .split(path.sep)
-      .join('/')
-    lines.push(rel)
-  }
-  await fsp.writeFile(filePath, `${lines.join('\n')}\n`, { mode: 0o664 })
-  await unlinkPlaylistImageSidecars(playlistsDir, base)
-  if (artworkTemplate) {
-    await writePlaylistCoverFromAppleTemplate(
-      artworkTemplate,
-      path.join(playlistsDir, `${base}.jpg`),
-    )
-  }
-  return filePath
 }
 
 async function moveFileSafe(from, to) {
