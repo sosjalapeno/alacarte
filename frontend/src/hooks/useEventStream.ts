@@ -18,6 +18,16 @@ const EVENT_TYPES = [
   'job.log',
   'wrapper.login',
   'wrapper.login.log',
+  'wrapper.health',
+  'wrapper.stall.suspected',
+  'following.check',
+  'following.download',
+  'following.updated',
+  'playlist-following.check',
+  'playlist-following.download',
+  'playlist-following.updated',
+  'cloud-library.download-all.progress',
+  'library.changed',
 ] as const
 
 // One shared EventSource per tab: browsers allow ~6 connections per host,
