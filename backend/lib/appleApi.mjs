@@ -95,6 +95,48 @@ export async function getPlaylist({ storefront, id, language = 'en-US' }) {
   return apiGet(url, { language })
 }
 
+const PLAYLIST_TRACKS_PAGE_SIZE = 100
+
+export async function fetchCatalogPlaylistTracksPage({
+  storefront,
+  id,
+  language = 'en-US',
+  offset = 0,
+  limit = PLAYLIST_TRACKS_PAGE_SIZE,
+}) {
+  const qs = new URLSearchParams({
+    limit: String(Math.max(1, Math.min(limit, PLAYLIST_TRACKS_PAGE_SIZE))),
+    offset: String(Math.max(0, offset)),
+    l: language,
+  })
+  const url = `${BASE}/${encodeURIComponent(storefront)}/playlists/${encodeURIComponent(id)}/tracks?${qs.toString()}`
+  return apiGet(url, { language })
+}
+
+export async function* iterateCatalogPlaylistTracks({
+  storefront,
+  id,
+  language,
+  pageSize,
+}) {
+  let offset = 0
+  const limit = pageSize || PLAYLIST_TRACKS_PAGE_SIZE
+  while (true) {
+    const json = await fetchCatalogPlaylistTracksPage({
+      storefront,
+      id,
+      language,
+      offset,
+      limit,
+    })
+    const data = json?.data || []
+    for (const raw of data) yield raw
+    const next = typeof json?.next === 'string' ? json.next : null
+    if (!next || data.length === 0) return
+    offset += data.length
+  }
+}
+
 export function normalizeAlbum(raw) {
   if (!raw) return null
   const a = raw.attributes || {}

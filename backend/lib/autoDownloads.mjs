@@ -5,6 +5,7 @@ import { makeAlbumKey, scanLibraryOnce, stripTrailingYear } from './libraryIndex
 import { enqueueAlbum } from './queue.mjs'
 import { readSettings } from './settingsStore.mjs'
 import { readFollowingStore, updateFollowedArtist } from './followedArtistsStore.mjs'
+import { readPlaylistsStore } from './followedPlaylistsStore.mjs'
 import { filterReleasesByScope, normalizeReleaseScope } from './releaseScope.mjs'
 
 const SCHEDULER_TICK_MS = Math.max(60_000, Number(process.env.AMDL_FOLLOW_TICK_MS) || 5 * 60 * 1000)
@@ -32,17 +33,18 @@ export async function runAutoDownloadCheck({ reason = 'manual', force = false } 
   try {
     const settings = await readSettings()
     if (!settings.autoDownloadsEnabled && !force) {
-      emitEvent('following.check', {
-        phase: 'skipped',
-        reason,
-        message: 'Auto-downloads are paused',
-      })
+      // Scheduled ticks stay silent when paused — the Settings page shows
+      // the paused state, and a per-tick feed warning would be noise.
       return { ok: true, skipped: true, reason: 'disabled' }
     }
 
     const store = await readFollowingStore()
     const artists = Object.values(store.artists)
-    const followedCount = artists.length
+    // Share the Apple API budget across artist and playlist follows so the
+    // effective interval matches what the Settings hint reports.
+    const playlistStore = await readPlaylistsStore()
+    const followedCount =
+      artists.length + Object.keys(playlistStore.playlists || {}).length
     const intervalMs = resolveIntervalMs(settings.autoDownloadCheckFrequency, followedCount)
     const now = Date.now()
     const dueArtistsAll = artists
@@ -57,13 +59,15 @@ export async function runAutoDownloadCheck({ reason = 'manual', force = false } 
       ? dueArtistsAll
       : dueArtistsAll.slice(0, MAX_PER_TICK)
 
-    emitEvent('following.check', {
-      phase: 'started',
-      reason,
-      artists: dueArtists.length,
-      totalArtists: artists.length,
-      deferred: Math.max(0, dueArtistsAll.length - dueArtists.length),
-    })
+    if (dueArtists.length > 0) {
+      emitEvent('following.check', {
+        phase: 'started',
+        reason,
+        artists: dueArtists.length,
+        totalArtists: artists.length,
+        deferred: Math.max(0, dueArtistsAll.length - dueArtists.length),
+      })
+    }
 
     const libIndex = await scanLibraryOnce()
 
@@ -75,13 +79,15 @@ export async function runAutoDownloadCheck({ reason = 'manual', force = false } 
       discovered += result.discovered
     }
 
-    emitEvent('following.check', {
-      phase: 'completed',
-      reason,
-      artists: dueArtists.length,
-      queued,
-      discovered,
-    })
+    if (dueArtists.length > 0) {
+      emitEvent('following.check', {
+        phase: 'completed',
+        reason,
+        artists: dueArtists.length,
+        queued,
+        discovered,
+      })
+    }
 
     return { ok: true, artists: dueArtists.length, queued, discovered }
   } finally {

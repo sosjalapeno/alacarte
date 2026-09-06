@@ -18,6 +18,7 @@ import { authRouter } from './routes/auth.mjs'
 import { playlistRouter } from './routes/playlist.mjs'
 import { followingRouter } from './routes/following.mjs'
 import { cloudLibraryRouter } from './routes/cloudLibrary.mjs'
+import { playlistFollowingRouter } from './routes/playlistFollowing.mjs'
 import { ensureConfigDir } from './lib/settingsStore.mjs'
 import { loadSecretsAtBoot } from './lib/secretKey.mjs'
 import { originGuard } from './lib/originGuard.mjs'
@@ -25,6 +26,7 @@ import { isPasswordSet } from './lib/authStore.mjs'
 import { generateSetupToken } from './lib/setupToken.mjs'
 import { isAuthDisabled, requireAuth } from './lib/requireAuth.mjs'
 import { startAutoDownloadScheduler } from './lib/autoDownloads.mjs'
+import { startPlaylistSyncScheduler } from './lib/playlistSync.mjs'
 import { initQueue } from './lib/queue.mjs'
 
 const PORT = Number(process.env.PORT || 7373)
@@ -111,9 +113,11 @@ app.use('/api/events', eventsRouter)
 app.use('/api/library', libraryRouter)
 app.use('/api/playlist', playlistRouter)
 app.use('/api/following', followingRouter)
+app.use('/api/playlist-following', playlistFollowingRouter)
 app.use('/api/cloud-library', cloudLibraryRouter)
 
 startAutoDownloadScheduler()
+startPlaylistSyncScheduler()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const publicDir = path.join(__dirname, 'public')

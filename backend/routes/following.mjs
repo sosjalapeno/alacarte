@@ -14,6 +14,7 @@ import { scanLibraryOnce, hasAlbumInLibrary } from '../lib/libraryIndex.mjs'
 import { loadArtistCatalogCached } from '../lib/artistCatalogCache.mjs'
 import { describeInterval, FREQUENCY_VALUES, resolveIntervalMs } from '../lib/checkInterval.mjs'
 import { readSettings } from '../lib/settingsStore.mjs'
+import { readPlaylistsStore } from '../lib/followedPlaylistsStore.mjs'
 import { filterReleasesByScope, normalizeReleaseScope } from '../lib/releaseScope.mjs'
 
 export const followingRouter = express.Router()
@@ -38,7 +39,10 @@ followingRouter.get('/check/effective-interval', async (req, res) => {
   try {
     const settings = await readSettings()
     const store = await readFollowingStore()
-    const followedCount = Object.keys(store.artists || {}).length
+    const playlistStore = await readPlaylistsStore()
+    const followedCount =
+      Object.keys(store.artists || {}).length +
+      Object.keys(playlistStore.playlists || {}).length
     const requestedMode = String(req.query?.mode || '')
     const mode = FREQUENCY_VALUES.has(requestedMode)
       ? requestedMode

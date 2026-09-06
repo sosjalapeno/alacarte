@@ -179,6 +179,7 @@ function jobPublic(j) {
     progress: j.progress,
     albumId: j.albumId,
     songId: j.songId || null,
+    followedPlaylistId: j.followedPlaylistId || null,
     playlistId: j.playlistId || null,
     libraryPlaylistId: j.libraryPlaylistId || null,
     albumTitle: j.albumTitle,
@@ -465,7 +466,7 @@ async function enqueueLibraryPlaylist({ libraryId, storefront, quality }) {
   return jobPublic(job)
 }
 
-export async function enqueueSong({ songId, albumId, storefront, quality }) {
+export async function enqueueSong({ songId, albumId, storefront, quality, followedPlaylistId }) {
   if (!songId) throw new Error('songId required')
 
   for (const j of state.jobs.values()) {
@@ -530,6 +531,7 @@ export async function enqueueSong({ songId, albumId, storefront, quality }) {
     progress: 0,
     albumId: resolvedAlbumId,
     songId,
+    followedPlaylistId: followedPlaylistId || null,
     albumTitle: trackName,
     artist: meta?.artistName || 'Unknown artist',
     artistId: meta?.artistId || null,

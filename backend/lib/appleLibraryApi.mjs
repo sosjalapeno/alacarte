@@ -234,6 +234,7 @@ export function normalizeLibraryTrack(raw) {
   return {
     id: catalogId || raw.id,
     libraryId: raw.id,
+    type: raw.type || null,
     catalogId,
     name: a.name || 'Unknown song',
     artistName: a.artistName || 'Unknown artist',
