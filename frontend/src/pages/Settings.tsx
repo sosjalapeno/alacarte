@@ -299,10 +299,10 @@ export function SettingsPage() {
                   <select
                     value={settings.namingConvention ?? 'apple'}
                     onChange={(e) => update({ namingConvention: e.target.value as 'apple' | 'qobuz' })}
-                    className="mt-2 w-full rounded border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[rgba(var(--accent),0.35)]"
+                    className="mt-2 w-full rounded-app border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-white outline-none transition-[border-color,background,box-shadow] duration-[250ms] ease-smooth focus:border-[rgba(var(--accent),0.45)] focus:bg-[rgba(var(--accent),0.04)] focus:shadow-[0_0_0_3px_rgba(var(--accent),0.18)]"
                   >
-                    <option value="apple">Apple Music (default)</option>
-                    <option value="qobuz">Qobuz-compatible</option>
+                    <option value="apple" className="bg-zinc-900">Apple Music (default)</option>
+                    <option value="qobuz" className="bg-zinc-900">Qobuz-compatible</option>
                   </select>
                 </div>
               </div>
