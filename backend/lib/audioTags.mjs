@@ -1,8 +1,6 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 
-const HEADER_BYTES = 64 * 1024
-
 /**
  * Normalize ISRC: uppercase, strip hyphens/spaces.
  */
@@ -20,9 +18,9 @@ export function normalizeUpc(value) {
 }
 
 /**
- * Read ISRC / UPC / BARCODE from a FLAC Vorbis comment block.
- * Fail-soft: returns empty fields on any parse error.
- * Only inspects the first 64KB of the file.
+ * Read ISRC / UPC / BARCODE from a FLAC Vorbis comment block. Walks the
+ * metadata block chain with seeks, so comment blocks after large PICTURE
+ * blocks are found too (ffmpeg remuxes reorder blocks). Fail-soft.
  */
 export async function readAudioIdentityTags(filePath) {
   const empty = { isrc: '', upc: '' }
@@ -30,10 +28,36 @@ export async function readAudioIdentityTags(filePath) {
     if (!/\.flac$/i.test(filePath)) return empty
     const fh = await fsp.open(filePath, 'r')
     try {
-      const buf = Buffer.alloc(HEADER_BYTES)
-      const { bytesRead } = await fh.read(buf, 0, HEADER_BYTES, 0)
-      if (bytesRead < 8) return empty
-      return parseFlacIdentityTags(buf.subarray(0, bytesRead))
+      const magic = Buffer.alloc(4)
+      const { bytesRead: magicRead } = await fh.read(magic, 0, 4, 0)
+      if (magicRead < 4 || magic.toString('ascii', 0, 4) !== 'fLaC') {
+        return empty
+      }
+      let offset = 4
+      for (let guard = 0; guard < 128; guard += 1) {
+        const header = Buffer.alloc(4)
+        const { bytesRead } = await fh.read(header, 0, 4, offset)
+        if (bytesRead < 4) return empty
+        const word = header.readUInt32BE(0)
+        const isLast = (word & 0x80000000) !== 0
+        const type = (word >>> 24) & 0x7f
+        const length = word & 0xffffff
+        offset += 4
+        if (type === 4) {
+          const block = Buffer.alloc(Math.min(length, 1024 * 1024))
+          const { bytesRead: blockRead } = await fh.read(
+            block,
+            0,
+            block.length,
+            offset,
+          )
+          if (blockRead < Math.min(length, block.length)) return empty
+          return extractVorbisIdentity(block.subarray(0, blockRead))
+        }
+        offset += length
+        if (isLast) return empty
+      }
+      return empty
     } finally {
       await fh.close()
     }
@@ -161,19 +185,40 @@ export function buildMinimalFlacWithTags(tags = {}) {
   ])
 }
 
-/** Sync helper for tests that already hold a buffer path open via writeFile. */
+/** Sync walker mirroring readAudioIdentityTags for scripts and tests. */
 export function readAudioIdentityTagsSync(filePath) {
+  const empty = { isrc: '', upc: '' }
   try {
-    if (!/\.flac$/i.test(filePath)) return { isrc: '', upc: '' }
+    if (!/\.flac$/i.test(filePath)) return empty
     const fd = fs.openSync(filePath, 'r')
     try {
-      const buf = Buffer.alloc(HEADER_BYTES)
-      const bytesRead = fs.readSync(fd, buf, 0, HEADER_BYTES, 0)
-      return parseFlacIdentityTags(buf.subarray(0, bytesRead))
+      const magic = Buffer.alloc(4)
+      if (fs.readSync(fd, magic, 0, 4, 0) < 4) return empty
+      if (magic.toString('ascii', 0, 4) !== 'fLaC') return empty
+      let offset = 4
+      for (let guard = 0; guard < 128; guard += 1) {
+        const header = Buffer.alloc(4)
+        if (fs.readSync(fd, header, 0, 4, offset) < 4) return empty
+        const word = header.readUInt32BE(0)
+        const isLast = (word & 0x80000000) !== 0
+        const type = (word >>> 24) & 0x7f
+        const length = word & 0xffffff
+        offset += 4
+        if (type === 4) {
+          const block = Buffer.alloc(Math.min(length, 1024 * 1024))
+          const blockRead = fs.readSync(fd, block, 0, block.length, offset)
+          if (blockRead < Math.min(length, block.length)) return empty
+          return extractVorbisIdentity(block.subarray(0, blockRead))
+        }
+        offset += length
+        if (isLast) return empty
+      }
+      return empty
     } finally {
       fs.closeSync(fd)
     }
   } catch {
-    return { isrc: '', upc: '' }
+    return empty
   }
 }
+
