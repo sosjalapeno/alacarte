@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import fsp from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
@@ -29,6 +30,7 @@ import {
   sanitizeSegment,
 } from './folderLayout.mjs'
 import { getAlbumTrackPresence, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, purgePlaylistExportsSharingIds, stripTrailingYear } from './libraryIndex.mjs'
+import { getDb } from './db.mjs'
 import { probeWrapperPorts } from './wrapperHealth.mjs'
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
@@ -39,7 +41,6 @@ const STAGING_MAX_AGE_MS = STAGING_MAX_AGE_HOURS * 60 * 60 * 1000
 const JOB_DIR_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const CONFIG_DIR = process.env.AMDL_CONFIG_DIR || '/config'
 const HISTORY_FILE = path.join(CONFIG_DIR, 'history.ndjson')
-const MAX_HISTORY = 500
 const MAX_CONCURRENT = 1
 const QUALITY_VALUES = new Set(['flac', 'alac', 'atmos', 'aac'])
 const STALL_WARN_MS = Math.max(5_000, Number(process.env.AMDL_STALL_WARN_MS) || 60_000)
@@ -157,8 +158,45 @@ export function getJob(id) {
 function updateJob(id, patch) {
   const j = state.jobs.get(id)
   if (!j) return
+  const statusChanged =
+    patch.status !== undefined && patch.status !== j.status
   Object.assign(j, patch, { updatedAt: Date.now() })
+  persistJob(j, statusChanged)
   emitEvent('job.update', jobPublic(j))
+}
+
+const PERSIST_MIN_INTERVAL_MS = 1_000
+const PERSIST_JOB_CAP = 300
+const lastPersistAt = new Map()
+
+// Persist a job snapshot to SQLite. Progress-only updates are throttled;
+// status changes (and new jobs) always write. Fail-soft: a DB problem must
+// never break downloads.
+function persistJob(job, force = false) {
+  try {
+    const now = Date.now()
+    const last = lastPersistAt.get(job.id) || 0
+    if (!force && now - last < PERSIST_MIN_INTERVAL_MS) return
+    lastPersistAt.set(job.id, now)
+    const db = getDb()
+    db.prepare(
+      `INSERT INTO queue_jobs (id, seq, status, payload, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+    ).run(job.id, job.createdAt || 0, job.status, JSON.stringify(job), now)
+    if (force && (job.status === 'done' || job.status === 'failed')) {
+      db.prepare(
+        `DELETE FROM queue_jobs WHERE id IN (
+           SELECT id FROM queue_jobs ORDER BY seq DESC LIMIT -1 OFFSET ?
+         )`,
+      ).run(PERSIST_JOB_CAP)
+    }
+  } catch (err) {
+    console.error('queue persist failed:', err.message)
+  }
 }
 
 function makeAbortError() {
@@ -204,23 +242,115 @@ function alreadyInLibraryError(message) {
   return err
 }
 
+const HISTORY_IMPORT_KEY = 'history_imported'
+const MAX_HISTORY_ROWS = 500
+
 async function appendHistory(j) {
   try {
-    await fsp.appendFile(
-      HISTORY_FILE,
-      JSON.stringify(jobPublic(j)) + '\n',
-      { mode: 0o600 },
-    )
-    const stat = await fsp.stat(HISTORY_FILE).catch(() => null)
-    if (stat && stat.size > 2_000_000) {
-      const raw = await fsp.readFile(HISTORY_FILE, 'utf8')
-      const lines = raw.trim().split('\n').slice(-MAX_HISTORY)
-      await fsp.writeFile(HISTORY_FILE, lines.join('\n') + '\n', {
-        mode: 0o600,
-      })
-    }
+    const db = getDb()
+    db.prepare(
+      `INSERT OR REPLACE INTO download_history (id, finished_at, payload)
+       VALUES (?, ?, ?)`,
+    ).run(j.id, Date.now(), JSON.stringify(jobPublic(j)))
+    db.prepare(
+      `DELETE FROM download_history WHERE id IN (
+         SELECT id FROM download_history ORDER BY finished_at DESC LIMIT -1 OFFSET ?
+       )`,
+    ).run(MAX_HISTORY_ROWS)
   } catch (err) {
     console.error('history write failed', err.message)
+  }
+}
+
+// One-time import of the legacy history.ndjson into SQLite; the file is kept
+// around untouched as a backup.
+function importLegacyHistory(db) {
+  const imported = db
+    .prepare('SELECT value FROM meta WHERE key = ?')
+    .get(HISTORY_IMPORT_KEY)
+  if (imported?.value === '1') return
+  try {
+    const raw = fs.readFileSync(HISTORY_FILE, 'utf8')
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO download_history (id, finished_at, payload)
+       VALUES (?, ?, ?)`,
+    )
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const job = JSON.parse(trimmed)
+        if (!job?.id) continue
+        insert.run(job.id, Number(job.updatedAt) || 0, trimmed)
+      } catch {}
+    }
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, '1')
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(HISTORY_IMPORT_KEY)
+  } catch {
+    // No legacy file or unreadable — mark as done either way.
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, '1')
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(HISTORY_IMPORT_KEY)
+  }
+}
+
+export function listHistory(limit = 200) {
+  try {
+    const rows = getDb()
+      .prepare(
+        'SELECT payload FROM download_history ORDER BY finished_at DESC LIMIT ?',
+      )
+      .all(Math.max(1, Math.min(Number(limit) || 200, 500)))
+    const jobs = []
+    for (const row of rows) {
+      try {
+        jobs.push(JSON.parse(row.payload))
+      } catch {}
+    }
+    return jobs
+  } catch (err) {
+    console.error('history read failed:', err.message)
+    return []
+  }
+}
+
+// Restore persisted jobs after a restart: queued/running jobs re-enter the
+// queue in their original order, finished jobs stay visible in the UI.
+function restorePersistedJobs() {
+  let restored = 0
+  try {
+    const db = getDb()
+    const rows = db
+      .prepare('SELECT payload FROM queue_jobs ORDER BY seq ASC')
+      .all()
+    for (const row of rows) {
+      let job
+      try {
+        job = JSON.parse(row.payload)
+      } catch {
+        continue
+      }
+      if (!job?.id || state.jobs.has(job.id)) continue
+      if (job.status === 'queued' || job.status === 'running') {
+        job.status = 'queued'
+        job.progress = 0
+        job.message = 'Requeued after restart'
+        state.jobs.set(job.id, job)
+        state.queue.push(job.id)
+        restored += 1
+      } else {
+        state.jobs.set(job.id, job)
+      }
+      lastPersistAt.set(job.id, 0)
+    }
+    if (restored > 0) {
+      console.log(`[queue] requeued ${restored} job(s) from previous run`)
+    }
+  } catch (err) {
+    console.error('queue restore failed:', err.message)
   }
 }
 
@@ -295,6 +425,7 @@ export async function enqueueAlbum({ albumId, storefront, quality, expectedArtis
   }
   state.jobs.set(id, job)
   state.queue.push(id)
+  persistJob(job, true)
   emitEvent('job.created', jobPublic(job))
   setImmediate(tickQueue)
   return jobPublic(job)
@@ -371,6 +502,7 @@ export async function enqueuePlaylist({ playlistId, libraryId, storefront, quali
 
   state.jobs.set(id, job)
   state.queue.push(id)
+  persistJob(job, true)
   emitEvent('job.created', jobPublic(job))
   setImmediate(tickQueue)
   return jobPublic(job)
@@ -461,6 +593,7 @@ async function enqueueLibraryPlaylist({ libraryId, storefront, quality }) {
 
   state.jobs.set(id, job)
   state.queue.push(id)
+  persistJob(job, true)
   emitEvent('job.created', jobPublic(job))
   setImmediate(tickQueue)
   return jobPublic(job)
@@ -554,6 +687,7 @@ export async function enqueueSong({ songId, albumId, storefront, quality, follow
   }
   state.jobs.set(id, job)
   state.queue.push(id)
+  persistJob(job, true)
   emitEvent('job.created', jobPublic(job))
   setImmediate(tickQueue)
   return jobPublic(job)
@@ -608,7 +742,16 @@ export async function initQueue() {
     }, STAGING_SWEEP_INTERVAL_MS)
     stagingSweepTimer.unref?.()
   }
+  try {
+    importLegacyHistory(getDb())
+  } catch (err) {
+    console.error('history import failed:', err.message)
+  }
+  restorePersistedJobs()
+  setImmediate(tickQueue)
 }
+
+export const __test__ = { persistJob, restorePersistedJobs }
 
 async function sweepStagingRoots() {
   const settings = await readSettings().catch(() => null)
