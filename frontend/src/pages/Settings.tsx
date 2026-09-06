@@ -396,7 +396,8 @@ export function SettingsPage() {
                 <div>
                   <div className="text-sm font-medium">Enable Auto-Downloads</div>
                   <div className="mt-1 text-sm text-white/55">
-                    Pause background checks without changing followed artists.
+                    Pause background checks for followed artists and playlists
+                    without changing what you follow.
                   </div>
                 </div>
               </label>
@@ -481,7 +482,8 @@ function EffectiveIntervalHint({
   if (mode === 'auto') {
     return (
       <p className="mt-2 text-xs text-white/45">
-        Currently ≈ every {data.label} for {data.followedCount} followed artist
+        Currently ≈ every {data.label} across {data.followedCount} followed artist
+        {data.followedCount === 1 ? '' : 's'} and playlist
         {data.followedCount === 1 ? '' : 's'}. Adjusts automatically to keep Apple
         Music API calls under the daily safety budget.
       </p>
@@ -489,7 +491,7 @@ function EffectiveIntervalHint({
   }
   return (
     <p className="mt-2 text-xs text-white/45">
-      Each artist is checked at most once every {data.label}.
+      Each artist and playlist is checked at most once every {data.label}.
     </p>
   )
 }
