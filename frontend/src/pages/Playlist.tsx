@@ -1,22 +1,29 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { Clock3, Badge as BadgeIcon, Download } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { AnimatePresence, motion } from 'framer-motion'
+import { Clock3, Badge as BadgeIcon, Download, ListMusic, ListPlus, ListX, X } from 'lucide-react'
 
 import {
   api,
   artworkSrcSet,
   artworkUrl,
+  type FollowedPlaylist,
   type LibraryPlaylistDetail,
   type PlaylistDetail,
+  type QualityPreference,
 } from '../api/client'
 import { useDownloadQualityPrompt } from '../hooks/useDownloadQualityPrompt'
 import { useQueue } from '../hooks/useQueue'
+import { useActivityFeed } from '../hooks/useActivityFeed'
+import { useAppSettings } from '../hooks/useAppSettings'
 import { Badge } from '../components/Badge'
 import { ResolvedMediaLink } from '../components/ResolvedMediaLink'
 import { formatPercent } from '../lib/format'
 import { StaggeredList, StaggeredItem } from '../components/StaggeredList'
 import { ProgressBar } from '../components/ProgressBar'
 import { Button } from '../components/Button'
+import { Modal } from '../components/Modal'
+import { QualityPicker } from '../components/QualityPicker'
 
 type AnyPlaylist =
   | (PlaylistDetail & { libraryId?: undefined; isUserCreated?: undefined; undownloadableCount?: undefined })
@@ -37,8 +44,48 @@ export function PlaylistPage() {
   const [playlist, setPlaylist] = useState<AnyPlaylist | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [enqueueing, setEnqueueing] = useState(false)
+  const [followed, setFollowed] = useState<FollowedPlaylist | null>(null)
+  const [followModalOpen, setFollowModalOpen] = useState(false)
+  const [unfollowModalOpen, setUnfollowModalOpen] = useState(false)
+  const [followSubmitting, setFollowSubmitting] = useState(false)
+  const [followQueuedCount, setFollowQueuedCount] = useState(0)
+  const [followBanner, setFollowBanner] = useState<null | 'followed' | 'unfollowed'>(null)
+  const [followQuality, setFollowQuality] = useState<QualityPreference>('flac')
   const { jobs } = useQueue()
   const { chooseDownloadQuality, qualityPrompt } = useDownloadQualityPrompt()
+  const { playlistFollowingState } = useActivityFeed()
+  const appSettings = useAppSettings()
+  const bannerTimersRef = useRef<number[]>([])
+  const pageId = libraryId || catalogId
+
+  const clearBannerTimers = () => {
+    for (const t of bannerTimersRef.current) window.clearTimeout(t)
+    bannerTimersRef.current = []
+  }
+  useEffect(() => clearBannerTimers, [])
+
+  useEffect(() => {
+    if (!pageId) return
+    let cancelled = false
+    api
+      .followedPlaylist(pageId)
+      .then((r) => {
+        if (!cancelled) setFollowed(r.playlist)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [pageId, playlist])
+
+  const livePlaylistState = followed
+    ? playlistFollowingState[followed.id]
+    : pageId
+      ? playlistFollowingState[pageId]
+      : undefined
+  useEffect(() => {
+    if (livePlaylistState?.unfollowed) setFollowed(null)
+  }, [livePlaylistState?.unfollowed])
 
   const existingPlaylistJob = useMemo(
     () =>
@@ -108,6 +155,60 @@ export function PlaylistPage() {
   }
 
   const isLibraryMode = Boolean(libraryId)
+
+  const openFollowModal = () => {
+    setFollowQuality(appSettings?.quality || 'flac')
+    setFollowModalOpen(true)
+  }
+
+  const submitFollow = async (downloadNow: boolean) => {
+    if (!pageId) return
+    setFollowSubmitting(true)
+    try {
+      const quality = appSettings?.promptForDownloadQuality
+        ? followQuality
+        : undefined
+      const result = libraryId
+        ? await api.followLibraryPlaylist(libraryId, downloadNow, quality)
+        : await api.followCatalogPlaylist(catalogId!, downloadNow, quality)
+      setFollowed(result.playlist)
+      setFollowModalOpen(false)
+      setFollowBanner('followed')
+      if (downloadNow) {
+        setFollowQueuedCount(result.queued)
+      }
+      clearBannerTimers()
+      bannerTimersRef.current = [
+        window.setTimeout(() => setFollowBanner(null), 6000),
+        window.setTimeout(() => setFollowQueuedCount(0), 6000),
+      ]
+    } catch (err: any) {
+      setError(err?.message || 'Failed to follow playlist')
+    } finally {
+      setFollowSubmitting(false)
+    }
+  }
+
+  const submitUnfollow = async () => {
+    if (!followed) return
+    setFollowSubmitting(true)
+    try {
+      await api.unfollowPlaylist(followed.id)
+      setFollowed(null)
+      setUnfollowModalOpen(false)
+      setFollowBanner('unfollowed')
+      setFollowQueuedCount(0)
+      clearBannerTimers()
+      bannerTimersRef.current = [
+        window.setTimeout(() => setFollowBanner(null), 6000),
+      ]
+    } catch (err: any) {
+      setError(err?.message || 'Failed to unfollow playlist')
+    } finally {
+      setFollowSubmitting(false)
+    }
+  }
+
   const undownloadable = isLibraryMode
     ? (playlist as LibraryPlaylistDetail | null)?.undownloadableCount || 0
     : 0
@@ -121,6 +222,50 @@ export function PlaylistPage() {
   return (
     <div className="mx-auto w-full max-w-6xl pt-4 md:pt-6">
       {error && <Badge variant="bad">{error}</Badge>}
+
+      <AnimatePresence>
+        {(followBanner || followQueuedCount > 0) && (
+          <motion.div
+            key="follow-banner"
+            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+            className="mb-4 flex items-center justify-between gap-3 rounded-app border border-[rgba(var(--accent),0.35)] bg-[rgba(var(--accent),0.10)] px-4 py-2.5 text-sm text-white/90 backdrop-blur-[10px]"
+          >
+            <div>
+              {followBanner === 'unfollowed'
+                ? 'Playlist unfollowed. Your existing downloads stay in the library.'
+                : 'Playlist followed. New tracks will download automatically.'}{' '}
+              {followQueuedCount > 0 && (
+                <>
+                  Queued <b>{followQueuedCount}</b> track
+                  {followQueuedCount === 1 ? '' : 's'} for download.{' '}
+                </>
+              )}
+              {followBanner !== 'unfollowed' && (
+                <Link
+                  to="/following"
+                  className="font-medium text-[rgb(var(--accent))] underline underline-offset-2 transition-colors hover:text-white"
+                >
+                  Open Following
+                </Link>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setFollowBanner(null)
+                setFollowQueuedCount(0)
+              }}
+              aria-label="Dismiss"
+              className="shrink-0 inline-flex h-[30px] w-[30px] items-center justify-center rounded-full border border-[rgba(var(--accent),0.25)] bg-[rgba(var(--accent),0.08)] text-white/75 transition-[background,border-color,color] duration-[250ms] ease-smooth hover:border-[rgba(var(--accent),0.45)] hover:bg-[rgba(var(--accent),0.18)] hover:text-white"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {playlist && (
         <StaggeredList
@@ -179,7 +324,7 @@ export function PlaylistPage() {
                 </div>
               )}
               <div className="mt-4 md:mt-6 flex flex-col gap-3">
-                <div className="flex gap-2 md:sticky md:top-20">
+                <div className="flex flex-wrap gap-2 md:sticky md:top-20">
                   <Button
                     onClick={onDownload}
                     disabled={
@@ -200,6 +345,26 @@ export function PlaylistPage() {
                             ? 'No downloadable tracks'
                             : 'Download Playlist'}
                   </Button>
+                  {followed ? (
+                    <Button
+                      onClick={() => setUnfollowModalOpen(true)}
+                      disabled={followSubmitting}
+                      variant="ghost"
+                      className="border-rose-300/30 bg-rose-500/10 text-rose-200 hover:border-rose-300/50 hover:bg-rose-500/20 hover:text-rose-100"
+                    >
+                      <ListX className="h-4 w-4" />
+                      Unfollow
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={openFollowModal}
+                      disabled={followSubmitting}
+                      variant="ghost"
+                    >
+                      <ListPlus className="h-4 w-4" />
+                      Follow
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -276,6 +441,112 @@ export function PlaylistPage() {
         </StaggeredList>
       )}
       {qualityPrompt}
+      <Modal
+        open={followModalOpen}
+        onClose={() => setFollowModalOpen(false)}
+        label="Follow playlist"
+        placement="center"
+        className="!max-w-[40rem]"
+      >
+        <div className="p-6">
+          <div className="flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[rgba(var(--accent),0.25)] bg-[rgba(var(--accent),0.12)] text-[rgb(var(--accent))]">
+              <ListMusic className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-wider text-white/55">
+                Follow playlist
+              </div>
+              <h2 className="mt-1 text-lg font-semibold text-white">
+                {playlist?.name || 'Playlist'}
+              </h2>
+              <p className="mt-2 text-sm text-white/60">
+                ALACarte will watch this playlist and automatically download
+                tracks you add to it. Removing a track from the playlist keeps
+                its download in your library.
+              </p>
+            </div>
+          </div>
+          {appSettings?.promptForDownloadQuality && (
+            <div className="mt-5">
+              <div className="mb-3">
+                <div className="text-xs uppercase tracking-wider text-white/55">
+                  Download quality
+                </div>
+                <div className="mt-1 text-sm text-white/60">
+                  Applies if you download the existing tracks now.
+                </div>
+              </div>
+              <QualityPicker value={followQuality} onChange={setFollowQuality} />
+            </div>
+          )}
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              onClick={() => setFollowModalOpen(false)}
+              disabled={followSubmitting}
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => submitFollow(false)}
+              disabled={followSubmitting}
+            >
+              Future additions only
+            </Button>
+            <Button
+              onClick={() => submitFollow(true)}
+              disabled={followSubmitting}
+            >
+              Download existing tracks
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={unfollowModalOpen}
+        onClose={() => setUnfollowModalOpen(false)}
+        label="Unfollow playlist"
+        placement="center"
+        className="!max-w-[36rem]"
+      >
+        <div className="p-6">
+          <div className="flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-rose-300/30 bg-rose-500/10 text-rose-200">
+              <ListX className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-wider text-white/55">
+                Unfollow playlist
+              </div>
+              <h2 className="mt-1 text-lg font-semibold text-white">
+                {playlist?.name || 'Playlist'}
+              </h2>
+              <p className="mt-2 text-sm text-white/60">
+                Stop watching for new tracks? Your existing downloads stay in
+                the library.
+              </p>
+            </div>
+          </div>
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              onClick={() => setUnfollowModalOpen(false)}
+              disabled={followSubmitting}
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={submitUnfollow}
+              disabled={followSubmitting}
+              className="border-rose-300/30 bg-rose-500/10 text-rose-200 hover:border-rose-300/50 hover:bg-rose-500/20 hover:text-rose-100"
+            >
+              <ListX className="h-4 w-4" />
+              Unfollow
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

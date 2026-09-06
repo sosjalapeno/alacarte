@@ -89,6 +89,45 @@ export type FollowingArtistState = {
     updatedAt: number;
 };
 
+type PlaylistFollowingCheckEvent = {
+    phase?: string;
+    reason?: string;
+    playlists?: number;
+    totalPlaylists?: number;
+    queued?: number;
+    discovered?: number;
+    playlistId?: string;
+    playlistName?: string;
+    message?: string;
+};
+
+type PlaylistFollowingDownloadEvent = {
+    playlistId?: string;
+    playlistName?: string;
+    trackId?: string;
+    trackName?: string;
+    artistName?: string;
+    jobId?: string | null;
+    error?: string;
+};
+
+type PlaylistFollowingUpdatedEvent = {
+    playlistId?: string;
+    totalTrackCount?: number;
+    missingTrackCount?: number;
+    undownloadableTrackCount?: number;
+    queued?: number;
+    followed?: boolean;
+};
+
+export type PlaylistFollowingState = {
+    totalTrackCount?: number;
+    missingTrackCount?: number;
+    undownloadableTrackCount?: number;
+    unfollowed?: boolean;
+    updatedAt: number;
+};
+
 const MAX_FEED_ITEMS = 120;
 const MAX_TERMINAL_LINES = 600;
 
@@ -103,6 +142,9 @@ export function useActivityFeed() {
         useState<EventStreamStatus>("connecting");
     const [followingState, setFollowingState] = useState<
         Record<string, FollowingArtistState>
+    >({});
+    const [playlistFollowingState, setPlaylistFollowingState] = useState<
+        Record<string, PlaylistFollowingState>
     >({});
     const sequenceRef = useRef(0);
     const jobFeedSignatureRef = useRef(new Map<string, string>());
@@ -374,6 +416,81 @@ export function useActivityFeed() {
                 return;
             }
 
+            if (type === "playlist-following.check") {
+                const event = data as PlaylistFollowingCheckEvent;
+                appendFeedItem(
+                    makePlaylistFollowingCheckFeedItem(
+                        event,
+                        now,
+                        `playlist-following-feed-${nextId()}`,
+                    ),
+                );
+                appendTerminalLine(
+                    makePlaylistFollowingCheckLine(
+                        event,
+                        now,
+                        `playlist-following-event-${nextId()}`,
+                    ),
+                );
+                return;
+            }
+
+            if (type === "playlist-following.download") {
+                const event = data as PlaylistFollowingDownloadEvent;
+                appendFeedItem(
+                    makePlaylistFollowingDownloadFeedItem(
+                        event,
+                        now,
+                        `playlist-following-download-feed-${nextId()}`,
+                    ),
+                );
+                appendTerminalLine(
+                    makePlaylistFollowingDownloadLine(
+                        event,
+                        now,
+                        `playlist-following-download-event-${nextId()}`,
+                    ),
+                );
+                return;
+            }
+
+            if (type === "playlist-following.updated") {
+                const event = data as PlaylistFollowingUpdatedEvent;
+                if (!event.playlistId) return;
+                const playlistId = event.playlistId;
+                if (event.followed === false) {
+                    setPlaylistFollowingState((prev) => ({
+                        ...prev,
+                        [playlistId]: {
+                            ...prev[playlistId],
+                            unfollowed: true,
+                            updatedAt: now,
+                        },
+                    }));
+                    return;
+                }
+                setPlaylistFollowingState((prev) => ({
+                    ...prev,
+                    [playlistId]: {
+                        totalTrackCount:
+                            typeof event.totalTrackCount === "number"
+                                ? event.totalTrackCount
+                                : prev[playlistId]?.totalTrackCount,
+                        missingTrackCount:
+                            typeof event.missingTrackCount === "number"
+                                ? event.missingTrackCount
+                                : prev[playlistId]?.missingTrackCount,
+                        undownloadableTrackCount:
+                            typeof event.undownloadableTrackCount === "number"
+                                ? event.undownloadableTrackCount
+                                : prev[playlistId]?.undownloadableTrackCount,
+                        unfollowed: false,
+                        updatedAt: now,
+                    },
+                }));
+                return;
+            }
+
             if (type === "wrapper.stall.suspected") {
                 const event = data as WrapperStallEvent;
                 const idleSec = Math.round((event.idleMs || 0) / 1000);
@@ -448,6 +565,7 @@ export function useActivityFeed() {
         recentFailures,
         latestEventAt,
         followingState,
+        playlistFollowingState,
     };
 }
 
@@ -656,6 +774,109 @@ function makeFollowingDownloadLine(
         text: `[following] ${failed ? "failed" : "queued"} ${event.artistName || "Followed artist"} — ${event.albumTitle || "New release"}${event.error ? ` · ${event.error}` : ""}`,
         channel: "event",
     };
+}
+
+function makePlaylistFollowingCheckFeedItem(
+    event: PlaylistFollowingCheckEvent,
+    ts: number,
+    id: string,
+): ActivityFeedItem {
+    return {
+        id,
+        ts,
+        source: "system",
+        severity: playlistFollowingCheckSeverity(event),
+        title: playlistFollowingCheckTitle(event),
+        detail: playlistFollowingCheckDetail(event),
+    };
+}
+
+function makePlaylistFollowingCheckLine(
+    event: PlaylistFollowingCheckEvent,
+    ts: number,
+    id: string,
+): ActivityTerminalLine {
+    const detail = playlistFollowingCheckDetail(event);
+    return {
+        id,
+        ts,
+        source: "system",
+        severity: playlistFollowingCheckSeverity(event),
+        text: `[playlist-following] ${playlistFollowingCheckTitle(event)}${detail ? ` · ${detail}` : ""}`,
+        channel: "event",
+    };
+}
+
+function makePlaylistFollowingDownloadFeedItem(
+    event: PlaylistFollowingDownloadEvent,
+    ts: number,
+    id: string,
+): ActivityFeedItem {
+    const failed = Boolean(event.error);
+    return {
+        id,
+        ts,
+        source: "system",
+        severity: failed ? "error" : "success",
+        title: failed
+            ? "Playlist auto-download failed"
+            : "Playlist auto-download triggered",
+        detail: `${event.playlistName || "Followed playlist"} — ${event.artistName || "Unknown artist"} · ${event.trackName || "New track"}${event.error ? ` · ${event.error}` : ""}`,
+    };
+}
+
+function makePlaylistFollowingDownloadLine(
+    event: PlaylistFollowingDownloadEvent,
+    ts: number,
+    id: string,
+): ActivityTerminalLine {
+    const failed = Boolean(event.error);
+    return {
+        id,
+        ts,
+        source: "system",
+        severity: failed ? "error" : "success",
+        text: `[playlist-following] ${failed ? "failed" : "queued"} ${event.trackName || "New track"} from ${event.playlistName || "followed playlist"}${event.error ? ` · ${event.error}` : ""}`,
+        channel: "event",
+    };
+}
+
+function playlistFollowingCheckSeverity(
+    event: PlaylistFollowingCheckEvent,
+): ActivitySeverity {
+    if (event.phase === "failed" || event.phase === "playlist-failed")
+        return "error";
+    if (event.phase === "skipped") return "warning";
+    if (event.phase === "completed") return event.queued ? "success" : "info";
+    return "info";
+}
+
+function playlistFollowingCheckTitle(event: PlaylistFollowingCheckEvent) {
+    if (event.phase === "started") return "Syncing followed playlists";
+    if (event.phase === "completed") return "Followed playlists synced";
+    if (event.phase === "skipped") return "Auto-downloads paused";
+    if (event.phase === "playlist-started")
+        return `Syncing ${event.playlistName || "playlist"}`;
+    if (event.phase === "playlist-completed")
+        return `Synced ${event.playlistName || "playlist"}`;
+    if (event.phase === "playlist-failed")
+        return `Sync failed for ${event.playlistName || "playlist"}`;
+    if (event.phase === "failed") return "Playlist sync failed";
+    return "Followed playlist event";
+}
+
+function playlistFollowingCheckDetail(event: PlaylistFollowingCheckEvent) {
+    if (event.message) return event.message;
+    if (event.phase === "started") {
+        return `${event.playlists || 0} due of ${event.totalPlaylists || 0} followed playlists`;
+    }
+    if (event.phase === "completed") {
+        return `${event.discovered || 0} new tracks found · ${event.queued || 0} queued`;
+    }
+    if (event.phase === "playlist-completed") {
+        return `${event.discovered || 0} found · ${event.queued || 0} queued`;
+    }
+    return undefined;
 }
 
 function wrapperSeverity(

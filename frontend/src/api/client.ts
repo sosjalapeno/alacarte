@@ -125,6 +125,7 @@ export type Job = {
   progress: number
   albumId: string
   songId?: string | null
+  followedPlaylistId?: string | null
   playlistId?: string | null
   libraryPlaylistId?: string | null
   albumTitle: string
@@ -217,6 +218,36 @@ export type FollowedArtist = Artist & {
   missingReleaseCount: number
   releaseScope: ReleaseScope
   fullyDownloaded: boolean
+}
+
+export type FollowedPlaylist = {
+  id: string
+  libraryId: string | null
+  catalogId: string | null
+  name: string
+  curatorName: string
+  description: string
+  artworkTemplate: string | null
+  artworkColor: string | null
+  isUserCreated: boolean
+  storefront: string
+  knownTrackIds: string[]
+  lastCheckedAt: number
+  followedAt: number
+  updatedAt: number
+  totalTrackCount: number
+  missingTrackCount: number
+  undownloadableTrackCount: number
+  downloadableTrackCount: number
+  lastError: string | null
+  fullyDownloaded: boolean
+}
+
+export type PlaylistFollowResult = {
+  playlist: FollowedPlaylist | null
+  queued: number
+  failed: Array<{ trackId?: string; trackName?: string; error: string }>
+  existed?: boolean
 }
 
 export type LibrarySingle = {
@@ -593,6 +624,50 @@ export const api = {
   effectiveCheckInterval: (mode?: AutoCheckFrequency) =>
     http<EffectiveCheckInterval>(
       `/api/following/check/effective-interval${mode ? `?mode=${encodeURIComponent(mode)}` : ''}`,
+    ),
+  playlistFollowing: () =>
+    http<{ playlists: FollowedPlaylist[] }>('/api/playlist-following'),
+  followedPlaylist: (id: string) =>
+    http<{ playlist: FollowedPlaylist | null }>(
+      `/api/playlist-following/${encodeURIComponent(id)}`,
+    ),
+  followLibraryPlaylist: (
+    libraryId: string,
+    downloadNow: boolean,
+    quality?: QualityPreference,
+  ) =>
+    http<PlaylistFollowResult>(
+      `/api/playlist-following/library/${encodeURIComponent(libraryId)}`,
+      { method: 'POST', body: JSON.stringify({ downloadNow, quality }) },
+    ),
+  followCatalogPlaylist: (
+    catalogId: string,
+    downloadNow: boolean,
+    quality?: QualityPreference,
+  ) =>
+    http<PlaylistFollowResult>(
+      `/api/playlist-following/catalog/${encodeURIComponent(catalogId)}`,
+      { method: 'POST', body: JSON.stringify({ downloadNow, quality }) },
+    ),
+  unfollowPlaylist: (id: string) =>
+    http<{ ok: boolean; existed: boolean }>(
+      `/api/playlist-following/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+  runPlaylistSync: () =>
+    http<{ ok: boolean; playlists?: number; queued?: number; discovered?: number }>(
+      '/api/playlist-following/sync/run',
+      { method: 'POST' },
+    ),
+  syncFollowedPlaylistNow: (id: string) =>
+    http<{ ok: boolean; playlist: FollowedPlaylist | null; queued: number; discovered: number }>(
+      `/api/playlist-following/${encodeURIComponent(id)}/sync`,
+      { method: 'POST' },
+    ),
+  downloadPlaylistMissing: (id: string, quality?: QualityPreference) =>
+    http<{ ok: boolean; playlist: FollowedPlaylist | null; queued: number }>(
+      `/api/playlist-following/${encodeURIComponent(id)}/download-missing`,
+      { method: 'POST', body: JSON.stringify({ quality }) },
     ),
   queue: () => http<{ jobs: Job[] }>('/api/queue'),
   library: () =>
