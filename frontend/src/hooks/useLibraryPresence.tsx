@@ -16,7 +16,7 @@ import {
   type Playlist,
   type Song,
 } from '../api/client'
-import { makeAlbumMatchKey, makeSongMatchKey } from '../lib/libraryMatchKey'
+import { isAlbumKeyVariantMatch, makeAlbumMatchKey, makeSongMatchKey } from '../lib/libraryMatchKey'
 import { useEventStream } from './useEventStream'
 
 type AlbumLookup = Pick<Album, 'id' | 'artistName' | 'name'> & {
@@ -163,7 +163,10 @@ export function LibraryPresenceProvider({ children }: { children: React.ReactNod
       const upc = normalizeUpcClient(album?.upc)
       if (upc && snapshot.upcs[upc]) return true
       const key = makeAlbumKey(album)
-      return Boolean(key && snapshot.albumKeys[key])
+      if (!key) return false
+      if (snapshot.albumKeys[key]) return true
+      // multi-artist releases are often imported under a shorter artist folder
+      return isAlbumKeyVariantMatch(Object.keys(snapshot.albumKeys), key)
     },
     [snapshot.albumKeys, snapshot.upcs],
   )

@@ -118,3 +118,51 @@ test('deluxe edition still does not match standard folder', async () => {
     assert.equal(await mod.hasAlbumInLibrary('Mad Season', 'Above'), true)
   })
 })
+
+test('isAlbumKeyVariantMatch matches album parts across artist spellings', async () => {
+  const mod = await import('../lib/libraryMatchKey.mjs')
+  const keys = ['denzel curry::ii', 'm i a::kala']
+
+  // collab album artist vs the shorter folder artist
+  assert.equal(
+    mod.isAlbumKeyVariantMatch(keys, 'denzel curry & kenny beats::ii'),
+    true,
+  )
+  // exact key still matches trivially
+  assert.equal(mod.isAlbumKeyVariantMatch(keys, 'denzel curry::ii'), true)
+
+  // different album, even by a related artist: no match
+  assert.equal(
+    mod.isAlbumKeyVariantMatch(keys, 'denzel curry & kenny beats::unlocked'),
+    false,
+  )
+  // unrelated artist with the same album name: no match
+  assert.equal(
+    mod.isAlbumKeyVariantMatch(keys, 'someone else::ii'),
+    false,
+  )
+  // empty / malformed keys: no match
+  assert.equal(mod.isAlbumKeyVariantMatch(keys, ''), false)
+  assert.equal(mod.isAlbumKeyVariantMatch(keys, 'no-separator'), false)
+})
+
+test('hasAlbumInLibrary resolves collab albums through the folder variant', async () => {
+  await withMusicRoot(async (root, mod) => {
+    const albumDir = path.join(root, 'Denzel Curry', 'ii')
+    await fsp.mkdir(albumDir, { recursive: true })
+    await fsp.writeFile(path.join(albumDir, '01. GONE FISHING.flac'), 'x')
+
+    assert.equal(
+      await mod.hasAlbumInLibrary('Denzel Curry & Kenny Beats', 'ii'),
+      true,
+    )
+    assert.equal(
+      await mod.hasAlbumInLibrary('Denzel Curry', 'ii'),
+      true,
+    )
+    assert.equal(
+      await mod.hasAlbumInLibrary('Denzel Curry & Kenny Beats', 'UNLOCKED'),
+      false,
+    )
+  })
+})

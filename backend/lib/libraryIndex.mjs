@@ -4,6 +4,7 @@ import path from 'node:path'
 import { normalizeIsrc, normalizeUpc, readAudioIdentityTags } from './audioTags.mjs'
 import { getDb, getMeta, setMeta } from './db.mjs'
 import {
+  isAlbumKeyVariantMatch,
   makeAlbumMatchKey,
   makeSongMatchKey,
   stripTrailingYear,
@@ -663,7 +664,9 @@ export async function hasAlbumInLibrary(artistName, albumName, preScannedIndex =
   if (upcNorm && index.upcs?.has(upcNorm)) return true
   const key = makeAlbumKey(artistName, stripTrailingYear(albumName))
   if (!key) return false
-  return index.albumKeys.has(key)
+  if (index.albumKeys.has(key)) return true
+  // multi-artist releases are often imported under a shorter artist folder
+  return isAlbumKeyVariantMatch(index.albumKeys, key)
 }
 
 export async function getAlbumTrackPresence(artistName, albumName, tracks, preScannedIndex = null) {

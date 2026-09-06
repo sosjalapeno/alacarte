@@ -86,3 +86,37 @@ export function makeSongMatchKey(
   if (!artistKey || !songKey || artistKey === '_' || songKey === '_') return ''
   return `${artistKey}::${songKey}`
 }
+
+/**
+ * Album presence fallback for multi-artist releases: the album part must
+ * match exactly while the artist parts are token subsets of each other
+ * ("denzel curry" vs "denzel curry & kenny beats"). Keys are
+ * `<artist>::<album>`; ':' never survives sanitization, so '::' is safe
+ * to split on.
+ */
+export function isAlbumKeyVariantMatch(
+  existingKeys: string[],
+  key: string,
+): boolean {
+  const sep = key.lastIndexOf('::')
+  if (sep <= 0 || sep + 2 >= key.length) return false
+  const artistKey = key.slice(0, sep)
+  const albumKey = key.slice(sep + 2)
+  const artistTokens = new Set(artistKey.split(' ').filter(Boolean))
+  if (artistTokens.size === 0) return false
+  for (const existing of existingKeys) {
+    const existingSep = existing.lastIndexOf('::')
+    if (existingSep <= 0 || existingSep + 2 >= existing.length) continue
+    if (existing.slice(existingSep + 2) !== albumKey) continue
+    const existingTokens = existing
+      .slice(0, existingSep)
+      .split(' ')
+      .filter(Boolean)
+    if (existingTokens.length === 0) continue
+    const subset =
+      existingTokens.every((t) => artistTokens.has(t)) ||
+      [...artistTokens].every((t) => existingTokens.includes(t))
+    if (subset) return true
+  }
+  return false
+}
