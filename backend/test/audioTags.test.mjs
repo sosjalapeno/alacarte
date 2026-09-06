@@ -164,6 +164,48 @@ test('getAlbumTrackPresence uses ISRC without merging deluxe folder', async () =
   })
 })
 
+test('getAlbumTrackPresence completes on isrc matches when the folder artist differs', async () => {
+  await withMusicRoot(async (root, mod) => {
+    // collab release imported under the primary artist's folder while the
+    // Apple album-level artist is "Denzel Curry & Kenny Beats"
+    const albumDir = path.join(root, 'Denzel Curry', 'ii')
+    await fsp.mkdir(albumDir, { recursive: true })
+    await fsp.writeFile(
+      path.join(albumDir, '01. GONE FISHING.flac'),
+      buildMinimalFlacWithTags({ isrc: 'USC4R2667132' }),
+    )
+    await fsp.writeFile(
+      path.join(albumDir, '02. EVIL GRIN.flac'),
+      buildMinimalFlacWithTags({ isrc: 'USC4R2667133' }),
+    )
+
+    const presence = await mod.getAlbumTrackPresence(
+      'Denzel Curry & Kenny Beats',
+      'ii',
+      [
+        { id: 't1', name: 'GONE FISHING', isrc: 'USC4R2667132' },
+        { id: 't2', name: 'EVIL GRIN', isrc: 'USC4R2667133' },
+      ],
+    )
+    assert.equal(presence.tracks.t1, true)
+    assert.equal(presence.tracks.t2, true)
+    assert.equal(presence.folderExists, false)
+    assert.equal(presence.complete, true)
+
+    // one track missing from the library keeps it incomplete
+    const partial = await mod.getAlbumTrackPresence(
+      'Denzel Curry & Kenny Beats',
+      'ii',
+      [
+        { id: 't1', name: 'GONE FISHING', isrc: 'USC4R2667132' },
+        { id: 't2', name: 'EVIL GRIN', isrc: 'USC4R2667133' },
+        { id: 't3', name: 'CANDLELIGHT', isrc: 'USC4R2667134' },
+      ],
+    )
+    assert.equal(partial.complete, false)
+  })
+})
+
 test('malformed flac does not crash scan', async () => {
   await withMusicRoot(async (root, mod) => {
     const albumDir = path.join(root, 'X', 'Y')

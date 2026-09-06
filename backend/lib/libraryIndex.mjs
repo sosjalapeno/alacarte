@@ -674,15 +674,18 @@ export async function getAlbumTrackPresence(artistName, albumName, tracks, preSc
   const isrcSet = index.isrcs || new Set()
   const present = {}
   let count = 0
+  let isrcCount = 0
   for (const track of tracks || []) {
     const id = String(track?.id || '')
     if (!id) continue
     const songKey = makeSongKey(artistName, track?.name || '')
     const isrcNorm = normalizeIsrc(track?.isrc)
+    const byIsrc = Boolean(isrcNorm && isrcSet.has(isrcNorm))
     const has = Boolean(
       (songKey && ((albumTrackSet && albumTrackSet.has(songKey)) || singlesSet.has(songKey))) ||
-        (isrcNorm && isrcSet.has(isrcNorm)),
+        byIsrc,
     )
+    if (byIsrc) isrcCount += 1
     present[id] = has
     if (has) count += 1
   }
@@ -691,7 +694,13 @@ export async function getAlbumTrackPresence(artistName, albumName, tracks, preSc
     tracks: present,
     present: count,
     expected,
-    complete: expected > 0 && count === expected && Boolean(albumTrackSet),
+    // A folder keyed by Apple's album artist may not exist when files were
+    // imported under a different artist spelling; every track matching by
+    // ISRC is still proof the album is on disk.
+    complete:
+      expected > 0 &&
+      count === expected &&
+      (Boolean(albumTrackSet) || (count > 0 && isrcCount === count)),
     folderExists: Boolean(albumTrackSet),
   }
 }
