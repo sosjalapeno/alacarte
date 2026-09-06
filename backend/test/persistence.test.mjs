@@ -66,6 +66,9 @@ test('full scan indexes the library and writes cache rows', async () => {
 
 test('incremental scan picks up additions, removals, and renames', async () => {
   const { scanLibrary, invalidateLibraryCache } = await import('../lib/libraryIndex.mjs')
+  // The scanner skips directories whose mtime is unchanged; keep mutations
+  // comfortably clear of previous timestamps so rounding can't collide.
+  const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
   // Nothing changed: rescan is served from cache rows with identical results
   const before = await scanLibrary()
@@ -75,6 +78,7 @@ test('incremental scan picks up additions, removals, and renames', async () => {
     .get()
 
   writeAudio('Artist One/Great Album/03. Third Song.flac')
+  await tick(15)
   invalidateLibraryCache()
   const afterAdd = await scanLibrary()
   assert.equal(afterAdd.albums[0].trackCount, 3)
@@ -86,6 +90,7 @@ test('incremental scan picks up additions, removals, and renames', async () => {
 
   const removed = path.join(tmpMusic, 'Artist One/Great Album/02. Second Song.flac')
   fs.rmSync(removed)
+  await tick(15)
   invalidateLibraryCache()
   const afterRemove = await scanLibrary()
   assert.equal(afterRemove.albums[0].trackCount, 2)
@@ -96,6 +101,7 @@ test('incremental scan picks up additions, removals, and renames', async () => {
     path.join(tmpMusic, 'Artist One/Great Album'),
     path.join(tmpMusic, 'Artist One/Renamed Album'),
   )
+  await tick(15)
   invalidateLibraryCache()
   const afterRename = await scanLibrary()
   assert.deepEqual(
