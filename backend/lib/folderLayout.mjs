@@ -37,6 +37,30 @@ export async function ensureDir(p) {
   await fsp.mkdir(p, { recursive: true, mode: 0o775 })
 }
 
+/**
+ * Fail fast when a download target cannot be written: walks up from finalDir
+ * to the nearest existing ancestor and checks W_OK there. Catches legacy
+ * root-owned artist folders (e.g. after a rootful -> rootless container
+ * migration) before the download runs instead of after.
+ */
+export async function assertWritableTarget(finalDir) {
+  let dir = path.resolve(finalDir)
+  for (;;) {
+    if (fs.existsSync(dir)) break
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  try {
+    await fsp.access(dir, fs.constants.W_OK)
+  } catch (err) {
+    throw new Error(
+      `music library folder is not writable: ${dir} (${err.code || err.message}). ` +
+        'Fix the folder ownership so the container user can write into it (e.g. chown -R the folder inside the music library).',
+    )
+  }
+}
+
 export async function mergeMove(src, dest) {
   await ensureDir(dest)
   const entries = await fsp.readdir(src, { withFileTypes: true })

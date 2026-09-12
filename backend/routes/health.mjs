@@ -1,5 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import path from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { getBearerToken } from '../lib/appleToken.mjs'
@@ -47,13 +49,19 @@ healthRouter.get('/', async (_req, res) => {
     tokenError = err.message
   }
   const musicWritable = await checkWritable(MUSIC_PATH)
+  const artistDirs = await checkArtistDirsWritable(MUSIC_PATH)
+  const musicOk = musicWritable.ok && artistDirs.count === 0
+  let musicError = musicWritable.ok ? null : musicWritable.error
+  if (musicWritable.ok && artistDirs.count > 0) {
+    musicError = `${artistDirs.count} artist folder(s) not writable by the container (e.g. ${artistDirs.examples.join(', ')}) — chown them to the container user`
+  }
   const wrapperUp = decrypt.ok && m3u8.ok && account.ok
   const events = getWrapperEventState()
   const recentStallMs = 5 * 60_000
   const stallRecent =
     events.stallSuspectedAt && Date.now() - events.stallSuspectedAt < recentStallMs
   res.json({
-    ok: wrapperUp && tokenOk && musicWritable.ok && mp4box.ok,
+    ok: wrapperUp && tokenOk && musicOk && mp4box.ok,
     wrapper: {
       host: WRAPPER_HOST,
       up: wrapperUp,
@@ -67,9 +75,35 @@ healthRouter.get('/', async (_req, res) => {
     },
     tools: { mp4box },
     appleToken: { ok: tokenOk, error: tokenError },
-    music: { path: MUSIC_PATH, ...musicWritable },
+    music: {
+      path: MUSIC_PATH,
+      ok: musicOk,
+      error: musicError,
+      unwritableArtistDirs: artistDirs.count,
+    },
   })
 })
+
+// First-level artist folders must be writable too: the root can pass the
+// writability probe while legacy root-owned artist folders make every
+// download into them fail with EACCES at finalize time.
+async function checkArtistDirsWritable(musicPath) {
+  try {
+    const entries = await fsp.readdir(musicPath, { withFileTypes: true })
+    const unwritable = []
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue
+      try {
+        await fsp.access(path.join(musicPath, e.name), fs.constants.W_OK)
+      } catch {
+        unwritable.push(e.name)
+      }
+    }
+    return { count: unwritable.length, examples: unwritable.slice(0, 5) }
+  } catch {
+    return { count: 0, examples: [] } // unreadable root is already reported
+  }
+}
 
 function checkWritable(p) {
   return new Promise((resolve) => {

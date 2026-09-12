@@ -23,6 +23,7 @@ import {
 } from './flacConvert.mjs'
 import {
   applyNamingConvention,
+  assertWritableTarget,
   computeFinalDir,
   ensureDir,
   mergeMove,
@@ -90,6 +91,25 @@ function createProgressState(job, { convertEnabled }) {
     convertDone: 0,
     finalizeProgress: 0,
   }
+}
+
+// Downloads die at finalize when the final folder cannot be written (e.g.
+// legacy root-owned artist folders from a rootful -> rootless migration).
+// Check the target before the amdl run so the job fails in seconds with an
+// actionable message instead of after the whole album is in staging.
+async function preflightMusicTarget(settings, job) {
+  if (job.kind === 'playlist' || !job.artist) {
+    await assertWritableTarget(MUSIC_ROOT)
+    return
+  }
+  const convention = settings.namingConvention || 'apple'
+  const finalDir = await computeFinalDir(
+    MUSIC_ROOT,
+    job.artist,
+    applyNamingConvention(stripTrailingYear(job.albumTitle || ''), convention),
+    job.year,
+  )
+  await assertWritableTarget(finalDir)
 }
 
 function resolveStagingRoot(settings) {
@@ -889,6 +909,7 @@ async function runJob(job) {
       mediaUserToken: creds.mediaUserToken,
       stagingRoot: jobStaging,
     })
+    await preflightMusicTarget(settings, job)
     throwIfCancelled(job)
 
     if (
