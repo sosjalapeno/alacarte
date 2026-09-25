@@ -4,6 +4,9 @@ services:
       context: ./wrapper
       dockerfile: Dockerfile
     image: alacarte-wrapper:local
+    # Built from source, never on a registry: skip pulls (Portainer's re-pull
+    # option) and rebuild on every deploy so updates are picked up.
+    pull_policy: build
     container_name: alacarte-wrapper
     # Wrapper binary + upstream rootfs are amd64-only. Pinning the platform makes
     # the build/run path explicit on arm64 hosts (Apple Silicon emulates via Rosetta).
@@ -38,6 +41,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    pull_policy: build
     container_name: alacarte-web
     # Upstream apple-music-downloader image is published amd64-only.
     platform: linux/amd64
