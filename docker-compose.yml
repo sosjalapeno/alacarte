@@ -12,7 +12,9 @@ services:
     # the build/run path explicit on arm64 hosts (Apple Silicon emulates via Rosetta).
     platform: linux/amd64
     volumes:
-      - ./data/wrapper:/app/rootfs/data
+      # ALACARTE_DATA_PATH lets hosts like Portainer (which resolve ./ per stack)
+      # keep settings and the Apple session at a fixed absolute path.
+      - ${ALACARTE_DATA_PATH:-./data}/wrapper:/app/rootfs/data
       # The chroot dev/ ships empty (.gitkeep only); the Android runtime needs
       # working device nodes.  Explicit bind-mounts work on both Docker and Podman.
       - /dev/null:/app/rootfs/dev/null
@@ -60,7 +62,7 @@ services:
       - AUTH_DISABLED=${AUTH_DISABLED:-false}
       - TRUST_PROXY=${TRUST_PROXY:-loopback}
     volumes:
-      - ./data/web:/config
+      - ${ALACARTE_DATA_PATH:-./data}/web:/config
       - ${MUSIC_PATH:?Set MUSIC_PATH in .env}:/music
     # Default (WEB_BIND unset/empty) publishes on all interfaces — same as
     # docker's default. Set WEB_BIND=127.0.0.1 in .env to restrict the UI to
