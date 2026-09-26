@@ -11,7 +11,7 @@ process.env.AMDL_MUSIC_PATH = tmpMusic
 
 const { writeAmdpConfig } = await import('../lib/amdpRunner.mjs')
 const { __test__ } = await import('../lib/queue.mjs')
-const { assertAmdpResult, isSkippableTrackError } = __test__
+const { assertAmdpResult, isSkippableTrackError, renumberFromTrackTag } = __test__
 
 const NOISE = 'Failed to decrypt secret: secret key not initialized'
 
@@ -22,6 +22,18 @@ function run(code, stdout, stderr = NOISE) {
 test('amdp config exits after a failed pass instead of waiting for Enter', async () => {
   const cfgPath = await writeAmdpConfig({ settings: {}, mediaUserToken: 't', stagingRoot: tmpConfig })
   assert.match(await fsp.readFile(cfgPath, 'utf8'), /^exit-on-error: true$/m)
+})
+
+test('playlist tracks keep their album metadata instead of the playlist', async () => {
+  const cfgPath = await writeAmdpConfig({ settings: {}, mediaUserToken: 't', stagingRoot: tmpConfig })
+  assert.match(await fsp.readFile(cfgPath, 'utf8'), /^use-songinfo-for-playlist: true$/m)
+})
+
+test('playlist files are renumbered from the album track tag', () => {
+  assert.equal(renumberFromTrackTag('08. Double Trio 2.m4a', '7/9'), '07. Double Trio 2.m4a')
+  assert.equal(renumberFromTrackTag('05. And I Dance.flac', '1'), '01. And I Dance.flac')
+  assert.equal(renumberFromTrackTag('12. GGG.m4a', null), '12. GGG.m4a')
+  assert.equal(renumberFromTrackTag('No Number.m4a', '3'), 'No Number.m4a')
 })
 
 test('a clean amdp run is not partial', () => {

@@ -256,11 +256,12 @@ export async function writeAudioIdentityTags(filePath, { isrc, upc } = {}) {
 }
 
 /**
- * Read artist / album / title / album_artist tags via ffprobe. Fail-soft.
- * Vorbis comment keys come back in varying cases, so lookup is caseless.
+ * Read artist / album / title / album_artist / track / isrc tags via ffprobe.
+ * Fail-soft. Vorbis comment keys come back in varying cases, so lookup is
+ * caseless.
  */
 export async function readAudioMetaTags(filePath) {
-  const empty = { artist: null, album: null, title: null, albumArtist: null }
+  const empty = { artist: null, album: null, title: null, albumArtist: null, track: null, isrc: null }
   try {
     const { stdout } = await execFileAsync(
       'ffprobe',
@@ -268,7 +269,7 @@ export async function readAudioMetaTags(filePath) {
         '-v',
         'error',
         '-show_entries',
-        'format_tags=artist,album,title,album_artist',
+        'format_tags=artist,album,title,album_artist,track,isrc',
         '-of',
         'json',
         filePath,
@@ -287,6 +288,8 @@ export async function readAudioMetaTags(filePath) {
       album: clean(tags.album),
       title: clean(tags.title),
       albumArtist: clean(tags.album_artist),
+      track: clean(tags.track),
+      isrc: clean(tags.isrc),
     }
   } catch {
     return empty

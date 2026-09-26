@@ -53,6 +53,7 @@ test('writeAudioIdentityTags stamps isrc and barcode without losing metadata', a
 
     const meta = await readAudioMetaTags(file)
     assert.equal(meta.title, 'Song')
+    assert.equal(meta.isrc, 'USUM72500427')
 })
 
 test('writeAudioIdentityTags rejects non-flac and empty input', async (t) => {

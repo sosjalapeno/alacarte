@@ -68,7 +68,9 @@ export async function writeAmdpConfig({
     'explicit-choice': '[E]',
     'clean-choice': '[C]',
     'apple-master-choice': '[M]',
-    'use-songinfo-for-playlist': false,
+    // Tag playlist tracks with their real album, album artist and track
+    // number rather than the playlist's, so they import into album folders.
+    'use-songinfo-for-playlist': true,
     'dl-albumcover-for-playlist': false,
     'mv-audio-type': 'atmos',
     'mv-max': 2160,

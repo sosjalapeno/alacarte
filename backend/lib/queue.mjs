@@ -808,7 +808,7 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag }
 
 // Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
 // artist-name-independent anchor (collab albums import under a different
@@ -1125,7 +1125,7 @@ async function runJob(job) {
       updateJob(job.id, {
         status: 'done',
         progress: 100,
-        message: `Imported ${importedTracks.length} tracks${partialSuffix}`,
+        message: playlistDoneMessage(job, importedTracks.length, partialSuffix),
         finalDir: path.dirname(playlistPath),
       })
       await appendHistory(job)
@@ -1713,8 +1713,6 @@ async function runLibraryPlaylistFill({
     message: 'Writing playlist file',
     currentTrack: null,
   })
-  const reused = job.stats.reused || 0
-  const downloaded = importedPaths.length - reused
   const playlistPath = await writePlaylistM3U({
     playlistName: job.albumTitle,
     playlistId: job.playlistId,
@@ -1733,7 +1731,7 @@ async function runLibraryPlaylistFill({
   updateJob(job.id, {
     status: 'done',
     progress: 100,
-    message: `Imported ${downloaded} track${downloaded === 1 ? '' : 's'}${reused ? ` · ${reused} already in library` : ''}${failedTracksSuffix(job.stats.failedTracks, job.lastTrackError)}`,
+    message: playlistDoneMessage(job, importedPaths.length, failedTracksSuffix(job.stats.failedTracks, job.lastTrackError)),
     finalDir: path.dirname(playlistPath),
   })
   invalidateLibraryCache()
@@ -2104,6 +2102,13 @@ function amdpFailureLine(output) {
   return null
 }
 
+function playlistDoneMessage(job, importedCount, suffix = '') {
+  const reused = job.stats.reused || 0
+  const downloaded = importedCount - reused
+  const reusedPart = reused ? ` · ${reused} already in library` : ''
+  return `Imported ${downloaded} track${downloaded === 1 ? '' : 's'}${reusedPart}${suffix}`
+}
+
 function failedTracksSuffix(count, reason) {
   if (!count) return ''
   const detail = reason && !/track\(s\) failed to download$/.test(reason) ? ` (${reason})` : ''
@@ -2186,14 +2191,29 @@ async function importPlaylistTracks({ job, jobStaging, onProgress }) {
     const parsed = inferArtistAlbumFromPath(relParts)
     const tags = await readAudioMetaTags(srcPath)
 
-    const artistName = tags.artist || parsed.artist || job.artist || 'Unknown Artist'
+    // Album artist, like album downloads, so featured tracks share the folder.
+    const artistName =
+      tags.albumArtist || tags.artist || parsed.artist || job.artist || 'Unknown Artist'
     const albumName = tags.album || parsed.album || null
+
+    const existingPath = await findSongPathInLibrary(
+      artistName,
+      tags.title || songNameFromFilename(path.basename(srcPath)),
+      tags.isrc,
+    )
+    if (existingPath) {
+      job.stats.reused = (job.stats.reused || 0) + 1
+      imported.push(existingPath)
+      onProgress?.({ done: i + 1, total: candidates.length })
+      continue
+    }
 
     // Every playlist track imports into the same Artist/Album structure as
     // album and song downloads; the playlist m3u8 references these files.
     let destDir
     let targetName = path.basename(srcPath)
     if (albumName) {
+      targetName = renumberFromTrackTag(targetName, tags.track)
       destDir = await computeFinalDir(
         MUSIC_ROOT,
         artistName,
@@ -2222,6 +2242,14 @@ async function importPlaylistTracks({ job, jobStaging, onProgress }) {
   }
 
   return imported
+}
+
+// amdp names playlist files by playlist position; use the album track number
+// so the file matches what an album download of the same release produces.
+function renumberFromTrackTag(fileName, track) {
+  const n = Number.parseInt(track, 10)
+  if (!(n > 0) || !/^\d+\.\s/.test(fileName)) return fileName
+  return fileName.replace(/^\d+/, String(n).padStart(2, '0'))
 }
 
 async function collectAudioFiles(root) {
