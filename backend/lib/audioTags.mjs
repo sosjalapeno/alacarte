@@ -314,7 +314,23 @@ export function readAudioIdentityTagsSync(filePath) {
  * remux (lossless, keeps all existing metadata). Fail-soft: returns false on
  * any problem and never touches the original file on failure.
  */
-export async function writeAudioIdentityTags(filePath, { isrc, upc } = {}) {
+// Writes to one file run one after another: downloads and the tag backfill
+// both stamp files, and a stamp remuxes through a fixed temp file name.
+const stampQueues = new Map()
+
+export function writeAudioIdentityTags(filePath, tags = {}) {
+  const key = path.resolve(filePath)
+  const previous = stampQueues.get(key) || Promise.resolve()
+  const run = previous.catch(() => {}).then(() => stampIdentityTags(filePath, tags))
+  stampQueues.set(key, run)
+  const release = () => {
+    if (stampQueues.get(key) === run) stampQueues.delete(key)
+  }
+  run.then(release, release)
+  return run
+}
+
+async function stampIdentityTags(filePath, { isrc, upc } = {}) {
   if (!/\.flac$/i.test(filePath)) return false
   const isrcNorm = normalizeIsrc(isrc)
   const upcNorm = normalizeUpc(upc)

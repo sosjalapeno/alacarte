@@ -56,6 +56,26 @@ test('writeAudioIdentityTags stamps isrc and barcode without losing metadata', a
     assert.equal(meta.isrc, 'USUM72500427')
 })
 
+test('concurrent identity writes to the same file both land', async (t) => {
+    if (!hasFfmpeg) {
+        t.skip('ffmpeg not available on this host')
+        return
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alacarte-tagrace-'))
+    for (let round = 0; round < 5; round++) {
+        const file = makeRealFlac(dir, `race-${round}.flac`, { title: 'Race' })
+        const results = await Promise.all([
+            writeAudioIdentityTags(file, { isrc: 'USUM72500427' }),
+            writeAudioIdentityTags(file, { upc: '00888072804555' }),
+        ])
+        assert.deepEqual(results, [true, true])
+        const identity = readAudioIdentityTagsSync(file)
+        assert.equal(identity.isrc, 'USUM72500427', `round ${round} lost the isrc`)
+        assert.equal(identity.upc, '00888072804555', `round ${round} lost the upc`)
+    }
+    assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('stamp-tmp')), [])
+})
+
 test('writeAudioIdentityTags rejects non-flac and empty input', async (t) => {
     if (!hasFfmpeg) {
         t.skip('ffmpeg not available on this host')
