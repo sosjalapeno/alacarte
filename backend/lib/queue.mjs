@@ -40,6 +40,7 @@ import { getDb } from './db.mjs'
 import { normalizeForMatchKey } from './libraryMatchKey.mjs'
 import { readAudioMetaTags, writeAudioIdentityTags } from './audioTags.mjs'
 import { probeWrapperPorts } from './wrapperHealth.mjs'
+import { wakeWrapper } from './wrapperLogin.mjs'
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
 const STAGING_ROOT_OUTSIDE = '/tmp/alacarte-staging'
@@ -856,7 +857,7 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine, catalogPlaylistTracksIfAnyOwned, updateJob, handleAmdpLine, createProgressState, state }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine, catalogPlaylistTracksIfAnyOwned, updateJob, handleAmdpLine, createProgressState, state, wakeAndWaitForWrapper }
 
 // Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
 // artist-name-independent anchor (collab albums import under a different
@@ -957,7 +958,11 @@ async function runJob(job) {
         `MP4Box preflight failed: ${mp4box.error}. Rebuild the web image so apple-music-dl can finalize MP4 files.`,
       )
     }
-    const wrapperHealth = await probeWrapperPorts()
+    let wrapperHealth = await probeWrapperPorts()
+    if (!wrapperHealth.ok) {
+      updateJob(job.id, { message: 'Waiting for the wrapper to start' })
+      wrapperHealth = await wakeAndWaitForWrapper(job)
+    }
     if (!wrapperHealth.ok) {
       const failed = wrapperHealth.failedPorts
         .map((p) => `${p.name}:${p.port}(${p.error})`)
@@ -1488,6 +1493,22 @@ async function catalogPlaylistTracksIfAnyOwned(job, settings, iterate = iterateC
     }
   }
   return null
+}
+
+const WRAPPER_WAKE_TIMEOUT_MS = 20_000
+
+// The supervisor may be holding the wrapper back (restart backoff after a lost
+// playback lease); start it now, since this download needs it.
+async function wakeAndWaitForWrapper(job) {
+  await wakeWrapper()
+  const deadline = Date.now() + WRAPPER_WAKE_TIMEOUT_MS
+  let health = await probeWrapperPorts()
+  while (!health.ok && Date.now() < deadline) {
+    throwIfCancelled(job)
+    await new Promise((r) => setTimeout(r, 1000))
+    health = await probeWrapperPorts()
+  }
+  return health
 }
 
 async function runPartialAlbumFill({

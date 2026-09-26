@@ -96,6 +96,33 @@ export async function isWrapperReachable() {
   }
 }
 
+// Supervisor state, including why and when it will restart a wrapper that
+// exited on its own. Null when the supervisor cannot be reached.
+export async function getSupervisorHealth() {
+  try {
+    const res = await fetch(`${getSupervisorUrl()}/health`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    return res.ok ? await res.json() : null
+  } catch {
+    return null
+  }
+}
+
+// Asks the supervisor to start the wrapper now rather than after a restart
+// backoff (e.g. after another device took the Apple Music stream).
+export async function wakeWrapper() {
+  try {
+    const res = await fetch(`${getSupervisorUrl()}/wake`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(3000),
+    })
+    return res.ok ? await res.json() : null
+  } catch {
+    return null
+  }
+}
+
 async function checkAppleReachability() {
   try {
     const res = await fetch('https://buy.itunes.apple.com/', {

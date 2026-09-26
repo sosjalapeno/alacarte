@@ -28,9 +28,13 @@ export function HealthPill({ health, loading, variant = 'default' }: Props) {
     return <Badge variant="ok" className={shellClass}>● Ready</Badge>
   }
   const wrapperDown = isWrapperDown(health)
+  const pause = wrapperDown ? wrapperPause(health) : null
   let label = 'Issue'
   let title = 'Something is not ready'
-  if (wrapperDown) {
+  if (pause) {
+    label = pause.label
+    title = pause.title
+  } else if (wrapperDown) {
     label = 'Sign in required'
     title = 'Apple Music wrapper is offline — add credentials in Settings.'
   } else if (!health.appleToken?.ok) {
@@ -66,12 +70,35 @@ function isWrapperDown(health: HealthReport): boolean {
   )
 }
 
+// The ports are also closed while the supervisor restarts the wrapper, or
+// waits because another device took the Apple Music stream; neither needs a
+// new sign-in.
+function wrapperPause(health: HealthReport): { label: string; title: string } | null {
+  const sup = health.wrapper?.supervisor
+  if (!sup) return null
+  if (sup.reason === 'lease_lost') {
+    const mins = Math.max(1, Math.ceil((sup.restartInMs ?? 0) / 60_000))
+    return {
+      label: 'Paused',
+      title: `Apple Music is playing on another device with this account. The wrapper resumes in about ${mins} min, or right away when a download starts.`,
+    }
+  }
+  if (sup.running || sup.restartInMs != null) {
+    return { label: 'Wrapper restarting', title: 'The Apple Music wrapper is starting up.' }
+  }
+  return null
+}
+
+function needsSignIn(health: HealthReport): boolean {
+  return isWrapperDown(health) && !wrapperPause(health)
+}
+
 export function getHealthPillTarget(health: HealthReport | null): string {
   if (!health) return '/status'
-  return isWrapperDown(health) ? '/settings' : '/status'
+  return needsSignIn(health) ? '/settings' : '/status'
 }
 
 export function getHealthPillAriaLabel(health: HealthReport | null): string {
   if (!health) return 'Open status'
-  return isWrapperDown(health) ? 'Open settings' : 'Open status'
+  return needsSignIn(health) ? 'Open settings' : 'Open status'
 }

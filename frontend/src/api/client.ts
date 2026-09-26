@@ -161,6 +161,12 @@ export type HealthReport = {
     decrypt: { ok: boolean; error: string | null }
     m3u8: { ok: boolean; error: string | null }
     account: { ok: boolean; error: string | null }
+    supervisor?: {
+      mode: string
+      running: boolean
+      reason: 'lease_lost' | 'crashed' | 'exited' | null
+      restartInMs: number | null
+    } | null
   }
   appleToken: { ok: boolean; error: string | null }
   music: { path: string; ok: boolean; error?: string }

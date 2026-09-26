@@ -10,6 +10,7 @@ import {
   getWrapperPorts,
   probeTcp,
 } from '../lib/wrapperHealth.mjs'
+import { getSupervisorHealth } from '../lib/wrapperLogin.mjs'
 
 export const healthRouter = express.Router()
 
@@ -34,11 +35,12 @@ function humanize(probe) {
 }
 
 healthRouter.get('/', async (_req, res) => {
-  const [decrypt, m3u8, account, mp4box] = await Promise.all([
+  const [decrypt, m3u8, account, mp4box, supervisor] = await Promise.all([
     probeTcp(WRAPPER_HOST, WRAPPER_PORTS.decrypt),
     probeTcp(WRAPPER_HOST, WRAPPER_PORTS.m3u8),
     probeTcp(WRAPPER_HOST, WRAPPER_PORTS.account),
     probeMp4Box(),
+    getSupervisorHealth(),
   ])
   let tokenOk = false
   let tokenError = null
@@ -72,6 +74,14 @@ healthRouter.get('/', async (_req, res) => {
       decrypt: humanize(decrypt),
       m3u8: humanize(m3u8),
       account: humanize(account),
+      supervisor: supervisor
+        ? {
+            mode: supervisor.mode,
+            running: Boolean(supervisor.running),
+            reason: supervisor.reason || null,
+            restartInMs: supervisor.restartInMs ?? null,
+          }
+        : null,
     },
     tools: { mp4box },
     appleToken: { ok: tokenOk, error: tokenError },
