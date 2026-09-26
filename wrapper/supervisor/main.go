@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -28,8 +29,14 @@ const (
 	minCleanBackoff = 5 * time.Second
 	maxCleanBackoff = 60 * time.Second
 	stableUptime    = 30 * time.Second
-	maxBodyBytes    = 64 << 10
-	loginSuccessMsg = "account info cached successfully"
+	// Apple ends the wrapper's playback lease when another device on the
+	// account starts streaming, and the wrapper exits. Restarting takes the
+	// lease back, so wait long enough not to fight that device.
+	minLeaseBackoff   = time.Minute
+	maxLeaseBackoff   = 15 * time.Minute
+	leaseStableUptime = 10 * time.Minute
+	maxBodyBytes      = 64 << 10
+	loginSuccessMsg   = "account info cached successfully"
 )
 
 type Mode string
@@ -55,6 +62,10 @@ type Supervisor struct {
 	loginCancel    context.CancelFunc
 	stopping       bool
 	cleanExits     int
+	leaseLosses    int
+	restartReason  string
+	restartAt      time.Time
+	wake           chan struct{}
 }
 
 func NewSupervisor(wrapperBin, wrapperDataDir string, normalArgs []string) *Supervisor {
@@ -63,6 +74,7 @@ func NewSupervisor(wrapperBin, wrapperDataDir string, normalArgs []string) *Supe
 		wrapperDataDir: wrapperDataDir,
 		normalArgs:     normalArgs,
 		mode:           ModeIdle,
+		wake:           make(chan struct{}, 1),
 	}
 }
 
@@ -165,7 +177,16 @@ func killGroup(pgid int) {
 
 // restartDelay backs off consecutive clean exits (e.g. no credentials yet)
 // while still restarting, so the wrapper recovers once credentials exist.
-func (s *Supervisor) restartDelay(exitErr error, uptime time.Duration) time.Duration {
+// A lost playback lease backs off much longer; see minLeaseBackoff.
+func (s *Supervisor) restartDelay(exitErr error, uptime time.Duration, leaseLost bool) time.Duration {
+	if leaseLost {
+		if uptime > leaseStableUptime {
+			s.leaseLosses = 0
+		}
+		s.leaseLosses++
+		return backoff(minLeaseBackoff, maxLeaseBackoff, s.leaseLosses)
+	}
+	s.leaseLosses = 0
 	if exitErr != nil {
 		s.cleanExits = 0
 		return crashRestart
@@ -174,11 +195,20 @@ func (s *Supervisor) restartDelay(exitErr error, uptime time.Duration) time.Dura
 		s.cleanExits = 0
 	}
 	s.cleanExits++
-	d := minCleanBackoff
-	for i := 1; i < s.cleanExits && d < maxCleanBackoff; i++ {
+	return backoff(minCleanBackoff, maxCleanBackoff, s.cleanExits)
+}
+
+func backoff(base, limit time.Duration, attempt int) time.Duration {
+	d := base
+	for i := 1; i < attempt && d < limit; i++ {
 		d *= 2
 	}
-	return min(d, maxCleanBackoff)
+	return min(d, limit)
+}
+
+func isLeaseLossLine(line string) bool {
+	return strings.Contains(line, "end lease code") ||
+		strings.Contains(line, "More than one device is trying to play")
 }
 
 func (s *Supervisor) StartNormal() {
@@ -189,8 +219,12 @@ func (s *Supervisor) StartNormal() {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	var leaseLost atomic.Bool
 	exited, err := s.run(ctx, s.normalArgs, func(line string) {
 		log.Printf("[wrapper] %s", line)
+		if isLeaseLossLine(line) {
+			leaseLost.Store(true)
+		}
 	})
 	if err != nil {
 		cancel()
@@ -200,6 +234,8 @@ func (s *Supervisor) StartNormal() {
 	p := &proc{cancel: cancel, done: make(chan struct{})}
 	s.normal = p
 	s.mode = ModeNormal
+	s.restartReason = ""
+	s.restartAt = time.Time{}
 	started := time.Now()
 	log.Printf("[supervisor] normal wrapper started")
 
@@ -214,15 +250,25 @@ func (s *Supervisor) StartNormal() {
 		if unexpected {
 			s.normal = nil
 			s.mode = ModeIdle
-			delay = s.restartDelay(err, time.Since(started))
+			delay = s.restartDelay(err, time.Since(started), leaseLost.Load())
+			s.restartReason = exitReason(err, leaseLost.Load())
+			s.restartAt = time.Now().Add(delay)
+			select { // drop a wake request that arrived while it was running
+			case <-s.wake:
+			default:
+			}
 		}
 		s.mu.Unlock()
 		close(p.done)
 		if !unexpected {
 			return
 		}
-		log.Printf("[supervisor] wrapper exited (%v), restarting in %s", exitDesc(err), delay)
-		time.Sleep(delay)
+		log.Printf("[supervisor] wrapper exited (%v, %s), restarting in %s", exitDesc(err), s.reasonSnapshot(), delay)
+		select {
+		case <-time.After(delay):
+		case <-s.wake:
+			log.Printf("[supervisor] woken early")
+		}
 		s.StartNormal()
 	}()
 }
@@ -239,6 +285,23 @@ func (s *Supervisor) stopNormal() {
 	}
 	p.cancel()
 	<-p.done
+}
+
+func exitReason(err error, leaseLost bool) string {
+	switch {
+	case leaseLost:
+		return "lease_lost"
+	case err != nil:
+		return "crashed"
+	default:
+		return "exited"
+	}
+}
+
+func (s *Supervisor) reasonSnapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restartReason
 }
 
 func exitDesc(err error) string {
@@ -261,6 +324,9 @@ type HealthResponse struct {
 	Ok      bool   `json:"ok"`
 	Mode    string `json:"mode"`
 	Running bool   `json:"running"`
+	// Set while waiting to restart the wrapper after it exited on its own.
+	Reason      string `json:"reason,omitempty"`
+	RestartInMs int64  `json:"restartInMs,omitempty"`
 }
 
 func (s *Supervisor) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +335,10 @@ func (s *Supervisor) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Ok:      true,
 		Mode:    string(s.mode),
 		Running: s.normal != nil || s.mode == ModeLoggingIn,
+	}
+	if s.mode == ModeIdle && !s.restartAt.IsZero() {
+		resp.Reason = s.restartReason
+		resp.RestartInMs = max(0, time.Until(s.restartAt).Milliseconds())
 	}
 	s.mu.Unlock()
 
@@ -399,11 +469,27 @@ func (s *Supervisor) handle2FA(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
+// handleWake starts the wrapper now instead of waiting out a restart
+// backoff; the backend calls it before a download needs the wrapper.
+func (s *Supervisor) handleWake(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	s.StartNormal()
+	s.handleHealth(w, r)
+}
+
 func (s *Supervisor) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/login/2fa", s.handle2FA)
+	mux.HandleFunc("/wake", s.handleWake)
 	return mux
 }
 

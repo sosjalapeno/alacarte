@@ -129,7 +129,7 @@ func TestRestartDelay(t *testing.T) {
 	sup := NewSupervisor("", "", nil)
 	var got []time.Duration
 	for i := 0; i < 6; i++ {
-		got = append(got, sup.restartDelay(nil, time.Second))
+		got = append(got, sup.restartDelay(nil, time.Second, false))
 	}
 	want := []time.Duration{5, 10, 20, 40, 60, 60}
 	for i := range want {
@@ -137,10 +137,10 @@ func TestRestartDelay(t *testing.T) {
 			t.Fatalf("clean exit delays = %v, want %v s", got, want)
 		}
 	}
-	if d := sup.restartDelay(nil, time.Minute); d != 5*time.Second {
+	if d := sup.restartDelay(nil, time.Minute, false); d != 5*time.Second {
 		t.Errorf("stable run should reset backoff, got %s", d)
 	}
-	if d := sup.restartDelay(errors.New("exit status 1"), time.Second); d != crashRestart {
+	if d := sup.restartDelay(errors.New("exit status 1"), time.Second, false); d != crashRestart {
 		t.Errorf("crash delay = %s, want %s", d, crashRestart)
 	}
 }
@@ -211,5 +211,78 @@ func TestLoginCancelledByClientDisconnect(t *testing.T) {
 	assertChildGone(t, sup, "login")
 	if _, err := os.Stat(sup.get2faFilePath()); !os.IsNotExist(err) {
 		t.Errorf("2fa file should be cleared after sign-in ends: %v", err)
+	}
+}
+
+// #33: the shipped wrapper exits 1 when Apple ends its playback lease
+// because another device on the account started playing, and requests the
+// lease again on every start. Restarting every few seconds would keep taking
+// the stream from that device.
+const leaseLossWrapper = `#!/bin/sh
+echo start >> "$FAKE_PID_DIR/starts"
+echo "[+] account info cached successfully"
+echo "[.] dialogHandler: {title: More than one device is trying to play music., message: With a Family plan, up to 5 other people can stream their music at once.}"
+echo "[.] end lease code 1"
+exit 1
+`
+
+func TestLeaseBackoff(t *testing.T) {
+	sup := NewSupervisor("", "", nil)
+	var got []time.Duration
+	for i := 0; i < 6; i++ {
+		got = append(got, sup.restartDelay(errors.New("exit status 1"), time.Second, true))
+	}
+	want := []time.Duration{1, 2, 4, 8, 15, 15}
+	for i := range want {
+		if got[i] != want[i]*time.Minute {
+			t.Fatalf("lease loss delays = %v, want %v min", got, want)
+		}
+	}
+	if d := sup.restartDelay(errors.New("exit status 1"), 11*time.Minute, true); d != time.Minute {
+		t.Errorf("a long run should reset the lease backoff, got %s", d)
+	}
+	if d := sup.restartDelay(errors.New("exit status 1"), time.Second, false); d != crashRestart {
+		t.Errorf("an ordinary crash should still restart after %s, got %s", crashRestart, d)
+	}
+}
+
+func TestLeaseLossWaitsAndWakeRestarts(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "wrapper")
+	if err := os.WriteFile(bin, []byte(leaseLossWrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PID_DIR", dir)
+	sup := NewSupervisor(bin, filepath.Join(dir, "data"), []string{"-H", "0.0.0.0"})
+	srv := httptest.NewServer(sup.routes())
+	t.Cleanup(func() {
+		sup.Stop()
+		srv.Close()
+	})
+	starts := func() int {
+		raw, _ := os.ReadFile(filepath.Join(dir, "starts"))
+		return strings.Count(string(raw), "start")
+	}
+
+	sup.StartNormal()
+	time.Sleep(crashRestart*2 + time.Second)
+	if n := starts(); n != 1 {
+		t.Fatalf("wrapper restarted %d times within %s of losing the lease", n-1, crashRestart*2)
+	}
+	h := health(t, srv)
+	if h.Mode != string(ModeIdle) || h.Reason != "lease_lost" || h.RestartInMs < 50_000 {
+		t.Fatalf("health during lease backoff = %+v", h)
+	}
+
+	res, err := http.Post(srv.URL+"/wake", "application/json", nil)
+	if err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("wake failed: %v %v", err, res)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for starts() < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := starts(); n != 2 {
+		t.Fatalf("wake should start the wrapper right away, starts = %d", n)
 	}
 }
