@@ -12,6 +12,7 @@ import {
   getAlbum,
   getPlaylist,
   getSong,
+  iterateCatalogPlaylistTracks,
   normalizeAlbum,
   normalizePlaylist,
 } from './appleApi.mjs'
@@ -842,7 +843,7 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine, catalogPlaylistTracksIfAnyOwned }
 
 // Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
 // artist-name-independent anchor (collab albums import under a different
@@ -1004,6 +1005,25 @@ async function runJob(job) {
         progressState,
       })
       return
+    }
+
+    if (job.kind === 'playlist' && job.playlistId && !job.libraryPlaylistId) {
+      const tracks = await catalogPlaylistTracksIfAnyOwned(job, settings).catch((err) => {
+        console.error(`[job ${job.id}] catalog playlist track lookup failed:`, err.message)
+        return null
+      })
+      if (tracks) {
+        job.playlistTracks = tracks
+        await runLibraryPlaylistFill({
+          job,
+          jobStaging,
+          settings,
+          creds,
+          quality,
+          progressState,
+        })
+        return
+      }
     }
 
     const isSong = job.kind === 'song'
@@ -1425,6 +1445,36 @@ async function downloadSingleTrack({ job, trackStaging, settings, creds, url, qu
   } else {
     assertAmdpResult(sub, combined)
   }
+}
+
+// A catalog playlist normally runs as one amdp pass, which cannot skip
+// tracks. When some are already owned, return the track list so the job can
+// take the per-track fill instead and reference those songs rather than
+// downloading them again. Returns null when nothing is owned.
+async function catalogPlaylistTracksIfAnyOwned(job, settings, iterate = iterateCatalogPlaylistTracks) {
+  const tracks = []
+  for await (const raw of iterate({
+    storefront: job.storefront,
+    id: job.playlistId,
+    language: settings?.language,
+  })) {
+    if (raw?.type !== 'songs' || !raw.id) continue
+    const a = raw.attributes || {}
+    tracks.push({
+      catalogId: String(raw.id),
+      name: a.name,
+      artistName: a.artistName,
+      albumName: a.albumName,
+      durationMs: a.durationInMillis,
+      isrc: a.isrc || null,
+    })
+  }
+  for (const t of tracks) {
+    if (await findSongPathInLibrary(t.artistName, t.name, t.isrc, null, { album: t.albumName })) {
+      return tracks
+    }
+  }
+  return null
 }
 
 async function runPartialAlbumFill({
