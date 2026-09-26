@@ -23,12 +23,14 @@ export function normalizeUpc(value) {
 }
 
 /**
- * Read ISRC / UPC / BARCODE from a FLAC Vorbis comment block. Walks the
+ * Read ISRC / UPC / BARCODE from a FLAC Vorbis comment block or from the
+ * iTunes freeform atoms amdp writes into .m4a files. Walks the FLAC
  * metadata block chain with seeks, so comment blocks after large PICTURE
  * blocks are found too (ffmpeg remuxes reorder blocks). Fail-soft.
  */
 export async function readAudioIdentityTags(filePath) {
   const empty = { isrc: '', upc: '' }
+  if (/\.m4a$/i.test(filePath)) return readMp4IdentityTags(filePath)
   try {
     if (!/\.flac$/i.test(filePath)) return empty
     const fh = await fsp.open(filePath, 'r')
@@ -69,6 +71,86 @@ export async function readAudioIdentityTags(filePath) {
   } catch {
     return empty
   }
+}
+
+const MAX_MOOV_BYTES = 32 * 1024 * 1024
+
+// Top-level boxes are walked with seeks so a moov after a large mdat is
+// found without reading the audio.
+async function readMp4IdentityTags(filePath) {
+  const empty = { isrc: '', upc: '' }
+  let fh
+  try {
+    fh = await fsp.open(filePath, 'r')
+    const { size: fileSize } = await fh.stat()
+    const header = Buffer.alloc(16)
+    let offset = 0
+    for (let guard = 0; guard < 64 && offset + 8 <= fileSize; guard += 1) {
+      await fh.read(header, 0, 16, offset)
+      let size = header.readUInt32BE(0)
+      const type = header.toString('latin1', 4, 8)
+      let headerLen = 8
+      if (size === 1) {
+        size = Number(header.readBigUInt64BE(8))
+        headerLen = 16
+      } else if (size === 0) {
+        size = fileSize - offset
+      }
+      if (size < headerLen) return empty
+      if (type === 'moov') {
+        if (size > MAX_MOOV_BYTES) return empty
+        const moov = Buffer.alloc(size - headerLen)
+        await fh.read(moov, 0, moov.length, offset + headerLen)
+        return parseMp4MoovIdentity(moov)
+      }
+      offset += size
+    }
+    return empty
+  } catch {
+    return empty
+  } finally {
+    await fh?.close().catch(() => {})
+  }
+}
+
+function* mp4Boxes(buf, start = 0, end = buf.length) {
+  let o = start
+  while (o + 8 <= end) {
+    const size = buf.readUInt32BE(o)
+    if (size < 8 || o + size > end) return
+    yield { type: buf.toString('latin1', o + 4, o + 8), start: o + 8, end: o + size }
+    o += size
+  }
+}
+
+function findMp4Box(buf, start, end, type) {
+  for (const box of mp4Boxes(buf, start, end)) if (box.type === type) return box
+  return null
+}
+
+// moov > [udta >] meta (full box) > ilst > '----' { mean, name, data }
+export function parseMp4MoovIdentity(moov) {
+  const out = { isrc: '', upc: '' }
+  const udta = findMp4Box(moov, 0, moov.length, 'udta')
+  const meta =
+    (udta && findMp4Box(moov, udta.start, udta.end, 'meta')) ||
+    findMp4Box(moov, 0, moov.length, 'meta')
+  if (!meta) return out
+  const ilst = findMp4Box(moov, meta.start + 4, meta.end, 'ilst')
+  if (!ilst) return out
+  for (const item of mp4Boxes(moov, ilst.start, ilst.end)) {
+    if (item.type !== '----') continue
+    let name = ''
+    let value = ''
+    for (const child of mp4Boxes(moov, item.start, item.end)) {
+      if (child.type === 'name') name = moov.toString('utf8', child.start + 4, child.end)
+      if (child.type === 'data') value = moov.toString('utf8', child.start + 8, child.end)
+    }
+    const key = name.trim().toUpperCase()
+    if (key === 'ISRC' && !out.isrc) out.isrc = normalizeIsrc(value)
+    if ((key === 'UPC' || key === 'BARCODE') && !out.upc) out.upc = normalizeUpc(value)
+  }
+  return out
 }
 
 export function parseFlacIdentityTags(buf) {

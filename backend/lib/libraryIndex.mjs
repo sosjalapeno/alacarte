@@ -9,6 +9,8 @@ import {
   isAlbumKeyVariantMatch,
   makeAlbumMatchKey,
   makeSongMatchKey,
+  normalizeForMatchKey,
+  sanitizeSegment,
   stripTrailingYear,
 } from './libraryMatchKey.mjs'
 
@@ -20,6 +22,9 @@ const AUDIO_RE = /\.(flac|m4a|mp3)$/i
 const SCAN_TTL_MS = 30_000
 // Even with incremental tracking, walk everything periodically so external
 // edits (re-tagged files, mtime-preserving moves) are eventually picked up.
+// Bump when readAudioIdentityTags learns a new format, so cached rows are
+// re-read by one full scan instead of waiting for files to change.
+const IDENTITY_TAGS_VERSION = '2'
 const FULL_RESCAN_MS =
   Math.max(1, Number(process.env.AMDL_FULL_RESCAN_HOURS) || 24) *
   60 *
@@ -63,9 +68,13 @@ export async function scanLibrary() {
   const db = tryGetDb()
   if (!db) return walkLibrary('ephemeral')
   const lastFull = Number(getMeta('library_last_full_scan') || 0)
-  const mode = Date.now() - lastFull > FULL_RESCAN_MS ? 'full' : 'incremental'
+  const staleTags = getMeta('identity_tags_version') !== IDENTITY_TAGS_VERSION
+  const mode = staleTags || Date.now() - lastFull > FULL_RESCAN_MS ? 'full' : 'incremental'
   const result = await walkLibrary(mode)
-  if (mode === 'full') setMeta('library_last_full_scan', String(Date.now()))
+  if (mode === 'full') {
+    setMeta('library_last_full_scan', String(Date.now()))
+    setMeta('identity_tags_version', IDENTITY_TAGS_VERSION)
+  }
   return result
 }
 
@@ -82,6 +91,7 @@ function emptyIndex() {
     isrcs: new Set(),
     upcs: new Set(),
     songPaths: new Map(),
+    songCandidates: new Map(),
     isrcPaths: new Map(),
     songVersionPaths: new Map(),
     albumVersionGroups: new Map(),
@@ -426,6 +436,13 @@ function aggregateAudioDirFromRows(rawRows, kind, artistName, dirPath, dirAddedA
   for (const row of rows) {
     if (row.song_key) {
       acc.songKeys.add(row.song_key)
+      let candidates = acc.songCandidates.get(row.song_key)
+      if (!candidates) acc.songCandidates.set(row.song_key, (candidates = []))
+      candidates.push({
+        rel: toRel(row.path),
+        isrc: row.isrc || '',
+        album: row.album_name ? albumMatchName(row.album_name) : null,
+      })
       if (!acc.songPaths.has(row.song_key)) {
         acc.songPaths.set(row.song_key, toRel(row.path))
       }
@@ -755,17 +772,35 @@ export async function hasSongInLibrary(artistName, songName, preScannedIndex = n
   return index.songKeys.has(key)
 }
 
-// Absolute path of an existing library file for this song (ISRC first, then
-// artist/title key), or null when the song is not on disk.
-export async function findSongPathInLibrary(artistName, songName, isrc = null, preScannedIndex = null) {
+// Absolute path of an existing library file for this song, or null. ISRC
+// wins. Otherwise an artist/title match counts on the same album (an owned
+// clean/explicit twin or re-registered release is still that album's track),
+// or as a loose Singles file whose ISRC does not contradict. A title match on
+// a different album never counts, so "Intro" or a live cut is not linked.
+export async function findSongPathInLibrary(
+  artistName,
+  songName,
+  isrc = null,
+  preScannedIndex = null,
+  { album = null } = {},
+) {
   const index = preScannedIndex || (await getCachedIndex())
   const isrcNorm = normalizeIsrc(isrc)
-  let rel = isrcNorm ? index.isrcPaths?.get(isrcNorm) : null
-  if (!rel) {
-    const key = makeSongKey(artistName, songName)
-    rel = key ? index.songPaths.get(key) : null
-  }
-  return rel ? path.join(getMusicRoot(), rel) : null
+  const byIsrc = isrcNorm ? index.isrcPaths?.get(isrcNorm) : null
+  if (byIsrc) return path.join(getMusicRoot(), byIsrc)
+  const key = makeSongKey(artistName, songName)
+  const wantAlbum = album ? albumMatchName(album) : null
+  const conflicts = (c) => Boolean(isrcNorm && c.isrc && c.isrc !== isrcNorm)
+  const match = (key && index.songCandidates?.get(key) || []).find((c) =>
+    wantAlbum ? c.album === wantAlbum || (!c.album && !conflicts(c)) : !conflicts(c),
+  )
+  return match ? path.join(getMusicRoot(), match.rel) : null
+}
+
+// Folder names went through sanitizeSegment, so compare requested album
+// names in the same form.
+function albumMatchName(name) {
+  return normalizeForMatchKey(stripTrailingYear(sanitizeSegment(name))).toLowerCase()
 }
 
 export async function getAlbumVersionGroups(artistName, albumName, upc = null, preScannedIndex = null) {

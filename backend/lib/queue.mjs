@@ -1675,6 +1675,8 @@ async function runLibraryPlaylistFill({
       track.artistName,
       track.name,
       fillTrackIsrc,
+      null,
+      { album: track.albumName },
     )
     if (existingPath) {
       importedPaths.push(existingPath)
@@ -2243,6 +2245,8 @@ async function importPlaylistTracks({ job, jobStaging, onProgress }) {
       artistName,
       tags.title || songNameFromFilename(path.basename(srcPath)),
       tags.isrc,
+      null,
+      { album: albumName },
     )
     if (existingPath) {
       job.stats.reused = (job.stats.reused || 0) + 1

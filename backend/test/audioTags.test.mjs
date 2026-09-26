@@ -234,3 +234,84 @@ test('findSongPathInLibrary prefers the ISRC match when titles differ', async ()
     assert.equal(await mod.findSongPathInLibrary('Artist', 'Radio Edit Version', null, idx), null)
   })
 })
+
+function box(type, ...children) {
+  const body = Buffer.concat(children)
+  const head = Buffer.alloc(8)
+  head.writeUInt32BE(body.length + 8, 0)
+  head.write(type, 4, 'latin1')
+  return Buffer.concat([head, body])
+}
+
+// Freeform iTunes item as amdp writes it: mean / name (full boxes) + data.
+function freeform(name, value) {
+  const fullbox = (type, text) => box(type, Buffer.alloc(4), Buffer.from(text, 'utf8'))
+  return box(
+    '----',
+    fullbox('mean', 'com.apple.iTunes'),
+    fullbox('name', name),
+    box('data', Buffer.from([0, 0, 0, 1, 0, 0, 0, 0]), Buffer.from(value, 'utf8')),
+  )
+}
+
+function buildM4a({ isrc, upc, moovFirst = false } = {}) {
+  const items = []
+  if (isrc) items.push(freeform('ISRC', isrc))
+  if (upc) items.push(freeform('UPC', upc))
+  const moov = box('moov', box('udta', box('meta', Buffer.alloc(4), box('ilst', ...items))))
+  const ftyp = box('ftyp', Buffer.from('M4A \0\0\0\0M4A mp42', 'latin1'))
+  const mdat = box('mdat', Buffer.alloc(256 * 1024, 7))
+  return moovFirst ? Buffer.concat([ftyp, moov, mdat]) : Buffer.concat([ftyp, mdat, moov])
+}
+
+test('reads ISRC and UPC from amdp m4a freeform atoms wherever moov sits', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'alacarte-m4a-'))
+  try {
+    for (const moovFirst of [false, true]) {
+      const file = path.join(dir, `song-${moovFirst}.m4a`)
+      await fsp.writeFile(file, buildM4a({ isrc: 'GBDUW0000051', upc: '0724389721157', moovFirst }))
+      assert.deepEqual(await readAudioIdentityTags(file), {
+        isrc: 'GBDUW0000051',
+        upc: '0724389721157',
+      })
+    }
+    const bare = path.join(dir, 'bare.m4a')
+    await fsp.writeFile(bare, buildM4a())
+    assert.deepEqual(await readAudioIdentityTags(bare), { isrc: '', upc: '' })
+    const junk = path.join(dir, 'junk.m4a')
+    await fsp.writeFile(junk, Buffer.from('not an mp4 file at all'))
+    assert.deepEqual(await readAudioIdentityTags(junk), { isrc: '', upc: '' })
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('findSongPathInLibrary title fallback respects album and ISRC', async () => {
+  await withMusicRoot(async (root, mod) => {
+    const albumDir = path.join(root, 'Artist', 'First Album')
+    const otherDir = path.join(root, 'Artist', 'Other Album')
+    const dotDir = path.join(root, 'Artist', 'Ends With Dot ')
+    const singlesDir = path.join(root, 'Artist', 'Singles')
+    for (const d of [albumDir, otherDir, dotDir, singlesDir]) await fsp.mkdir(d, { recursive: true })
+    await fsp.writeFile(path.join(albumDir, '01. Intro.flac'), buildMinimalFlacWithTags({ isrc: 'USRC10000001' }))
+    await fsp.writeFile(path.join(otherDir, '01. Intro.m4a'), buildM4a({ isrc: 'USRC10000002' }))
+    await fsp.writeFile(path.join(dotDir, '01. Dotted.flac'), buildMinimalFlacWithTags({}))
+    await fsp.writeFile(path.join(singlesDir, 'Loose.flac'), buildMinimalFlacWithTags({ isrc: 'USRC10000003' }))
+
+    const idx = await mod.scanLibrary()
+    const find = (title, isrc, album) => mod.findSongPathInLibrary('Artist', title, isrc, idx, { album })
+
+    // ISRC wins, including m4a ISRCs
+    assert.equal(await find('Intro', 'USRC10000002', null), path.join(otherDir, '01. Intro.m4a'))
+    // same album counts even when its ISRC differs (clean/explicit twin, re-registration)
+    assert.equal(await find('Intro', 'USRC19999999', 'First Album'), path.join(albumDir, '01. Intro.flac'))
+    // a title match on a different album never counts
+    assert.equal(await find('Intro', null, 'Third Album'), null)
+    assert.equal(await find('Intro', null, 'Other Album - Single'), path.join(otherDir, '01. Intro.m4a'))
+    // album names compare in their sanitized folder form
+    assert.equal(await find('Dotted', null, 'Ends With Dot .'), path.join(dotDir, '01. Dotted.flac'))
+    // loose singles match unless their ISRC contradicts
+    assert.equal(await find('Loose', null, 'Loose - Single'), path.join(singlesDir, 'Loose.flac'))
+    assert.equal(await find('Loose', 'USRC18888888', 'Loose - Single'), null)
+  })
+})
