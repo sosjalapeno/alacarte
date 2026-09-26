@@ -53,39 +53,6 @@ function formatAuthErrorDetail(authError) {
   return message ? `${errorText}: ${message}` : errorText
 }
 
-export function formatWorkerExitReason({
-  statusCode,
-  oomKilled = false,
-  twoFaSubmitted = false,
-} = {}) {
-  if (oomKilled) {
-    return twoFaSubmitted
-      ? 'Sign-in worker was killed by OOM after accepting 2FA'
-      : 'Sign-in worker was killed by OOM'
-  }
-  if (!Number.isFinite(statusCode) || statusCode === -1) return null
-  if (twoFaSubmitted) {
-    let msg = `Sign-in worker exited after accepting 2FA (exit ${statusCode})`
-    if (statusCode === 139) msg += ' (SIGSEGV)'
-    else if (statusCode === 134) msg += ' (SIGABRT)'
-    return msg
-  }
-  if (statusCode !== 0) {
-    return `Sign-in worker exited unexpectedly (exit ${statusCode})`
-  }
-  return null
-}
-
-export function isSpuriousWaitResult({
-  statusCode,
-  running = false,
-  started = false,
-} = {}) {
-  if (running) return true
-  if (!started) return true
-  return statusCode === -1
-}
-
 export function logsIndicateTwoFa(s) {
   return (
     /\[!\] Enter your 2FA code into rootfs/i.test(s) ||
@@ -94,42 +61,14 @@ export function logsIndicateTwoFa(s) {
 }
 
 export function formatUnexpectedExitFallback({
-  statusCode,
-  oomKilled = false,
   twoFaDetected = false,
   twoFaSubmitted = false,
 } = {}) {
-  const bits = [
-    `exit=${Number.isFinite(statusCode) ? statusCode : 'unknown'}`,
-    `oom=${oomKilled ? 1 : 0}`,
-    `twoFaDetected=${twoFaDetected ? 1 : 0}`,
-  ]
+  const bits = [`twoFaDetected=${twoFaDetected ? 1 : 0}`]
   if (twoFaSubmitted) bits.push('twoFaSubmitted=1')
   return twoFaDetected
     ? `Sign-in ended without success after 2FA (${bits.join(' ')})`
-    : `Sign-in container exited unexpectedly (${bits.join(' ')})`
-}
-
-function isDockerMuxFrame(buf) {
-  if (buf.length < 8) return false
-  if (buf[0] > 2) return false
-  if (buf[1] !== 0 || buf[2] !== 0 || buf[3] !== 0) return false
-  const len = buf.readUInt32BE(4)
-  return len <= 1024 * 1024
-}
-
-export function parseAttachChunk(chunk) {
-  let buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-  if (buf.length === 0) return ''
-  if (!isDockerMuxFrame(buf)) return buf.toString('utf8')
-  const out = []
-  while (buf.length > 8) {
-    const len = buf.readUInt32BE(4)
-    if (buf.length < 8 + len) break
-    out.push(buf.subarray(8, 8 + len).toString('utf8'))
-    buf = buf.subarray(8 + len)
-  }
-  return out.join('')
+    : `Sign-in worker exited unexpectedly (${bits.join(' ')})`
 }
 
 export function extractWrapperFailureReason(s) {
