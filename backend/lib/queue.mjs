@@ -1643,6 +1643,7 @@ async function runLibraryPlaylistFill({
     )
     if (existingPath) {
       importedPaths.push(existingPath)
+      job.stats.reused = (job.stats.reused || 0) + 1
       progressState.downloadDone = i + 1
       job.stats.done = i + 1
       applyProgress(job, progressState, {
@@ -1711,6 +1712,8 @@ async function runLibraryPlaylistFill({
     message: 'Writing playlist file',
     currentTrack: null,
   })
+  const reused = job.stats.reused || 0
+  const downloaded = importedPaths.length - reused
   const playlistPath = await writePlaylistM3U({
     playlistName: job.albumTitle,
     playlistId: job.playlistId,
@@ -1729,7 +1732,7 @@ async function runLibraryPlaylistFill({
   updateJob(job.id, {
     status: 'done',
     progress: 100,
-    message: `Imported ${importedPaths.length} track${importedPaths.length === 1 ? '' : 's'}${failedTracksSuffix(job.stats.failedTracks, job.lastTrackError)}`,
+    message: `Imported ${downloaded} track${downloaded === 1 ? '' : 's'}${reused ? ` · ${reused} already in library` : ''}${failedTracksSuffix(job.stats.failedTracks, job.lastTrackError)}`,
     finalDir: path.dirname(playlistPath),
   })
   invalidateLibraryCache()

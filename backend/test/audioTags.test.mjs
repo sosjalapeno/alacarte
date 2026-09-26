@@ -216,3 +216,21 @@ test('malformed flac does not crash scan', async () => {
     assert.equal(idx.isrcs.size, 0)
   })
 })
+
+test('findSongPathInLibrary prefers the ISRC match when titles differ', async () => {
+  await withMusicRoot(async (root, mod) => {
+    const singlesDir = path.join(root, 'Artist', 'Singles')
+    await fsp.mkdir(singlesDir, { recursive: true })
+    await fsp.writeFile(
+      path.join(singlesDir, 'Canonical.flac'),
+      buildMinimalFlacWithTags({ isrc: 'USRC17777777' }),
+    )
+
+    const idx = await mod.scanLibrary()
+    assert.equal(
+      await mod.findSongPathInLibrary('Artist', 'Radio Edit Version', 'usrc1-77-77777', idx),
+      path.join(singlesDir, 'Canonical.flac'),
+    )
+    assert.equal(await mod.findSongPathInLibrary('Artist', 'Radio Edit Version', null, idx), null)
+  })
+})
