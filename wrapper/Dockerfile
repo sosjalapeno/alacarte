@@ -6,8 +6,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -
 
 FROM debian:stable-slim
 
-ENV args=""
-
 RUN apt-get update \
   && apt-get install -y --no-install-recommends gcc libc6-dev \
   && rm -rf /var/lib/apt/lists/*
@@ -33,6 +31,6 @@ RUN gcc -shared -fPIC -O2 \
   && chmod +x /app/wrapper-entrypoint.sh /app/supervisor
 
 ENTRYPOINT ["/app/wrapper-entrypoint.sh"]
-CMD ["-host", "0.0.0.0"]
+CMD ["-H", "0.0.0.0"]
 
 EXPOSE 10020 20020 30020 40020

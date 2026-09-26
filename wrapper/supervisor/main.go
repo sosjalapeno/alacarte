@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +22,16 @@ import (
 
 var codeRegex = regexp.MustCompile(`^\d{6}$`)
 
+const (
+	stopGrace       = 3 * time.Second
+	crashRestart    = 3 * time.Second
+	minCleanBackoff = 5 * time.Second
+	maxCleanBackoff = 60 * time.Second
+	stableUptime    = 30 * time.Second
+	maxBodyBytes    = 64 << 10
+	loginSuccessMsg = "account info cached successfully"
+)
+
 type Mode string
 
 const (
@@ -30,23 +40,21 @@ const (
 	ModeLoggingIn Mode = "logging_in"
 )
 
+type proc struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type Supervisor struct {
 	mu             sync.Mutex
 	wrapperBin     string
 	wrapperDataDir string
 	normalArgs     []string
 	mode           Mode
-	normalCmd      *exec.Cmd
-	loginCmd       *exec.Cmd
+	normal         *proc
 	loginCancel    context.CancelFunc
-	collectedLogs  strings.Builder
-	subscribers    map[chan string]struct{}
-	loginListeners map[chan string]struct{}
 	stopping       bool
-	lastLoginErr   string
-	// Track consecutive clean exits for exponential backoff
-	cleanExitCount int
-	lastStartTime  time.Time
+	cleanExits     int
 }
 
 func NewSupervisor(wrapperBin, wrapperDataDir string, normalArgs []string) *Supervisor {
@@ -55,8 +63,6 @@ func NewSupervisor(wrapperBin, wrapperDataDir string, normalArgs []string) *Supe
 		wrapperDataDir: wrapperDataDir,
 		normalArgs:     normalArgs,
 		mode:           ModeIdle,
-		subscribers:    make(map[chan string]struct{}),
-		loginListeners: make(map[chan string]struct{}),
 	}
 }
 
@@ -100,157 +106,146 @@ func (s *Supervisor) write2faCode(code string) error {
 	return nil
 }
 
-func (s *Supervisor) broadcastLog(line string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.collectedLogs.WriteString(line + "\n")
-	for ch := range s.subscribers {
-		select {
-		case ch <- line:
-		default:
+// run starts the wrapper and feeds each output line to onLine. Cancelling ctx
+// sends SIGTERM, escalating to SIGKILL after stopGrace. The returned channel
+// yields the exit error once the process is gone and its output is drained.
+//
+// The wrapper forks a child that outlives it and keeps serving the wrapper
+// ports, so each run gets its own process group and the whole group is
+// signalled and reaped.
+func (s *Supervisor) run(ctx context.Context, args []string, onLine func(string)) (<-chan error, error) {
+	cmd := exec.CommandContext(ctx, s.wrapperBin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = stopGrace
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	scanned := make(chan struct{})
+	go func() {
+		defer close(scanned)
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 64<<10), 1<<20)
+		for sc.Scan() {
+			onLine(sc.Text())
+		}
+		_, _ = io.Copy(io.Discard, pr)
+	}()
+
+	exited := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		killGroup(cmd.Process.Pid)
+		_ = pw.Close()
+		<-scanned
+		exited <- err
+	}()
+	return exited, nil
+}
+
+// killGroup kills what is left of a process group and reaps members that were
+// reparented to the supervisor, which runs as PID 1 in the container.
+func killGroup(pgid int) {
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	for {
+		var ws syscall.WaitStatus
+		_, err := syscall.Wait4(-pgid, &ws, 0, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return
 		}
 	}
-	for ch := range s.loginListeners {
-		select {
-		case ch <- line:
-		default:
-		}
+}
+
+// restartDelay backs off consecutive clean exits (e.g. no credentials yet)
+// while still restarting, so the wrapper recovers once credentials exist.
+func (s *Supervisor) restartDelay(exitErr error, uptime time.Duration) time.Duration {
+	if exitErr != nil {
+		s.cleanExits = 0
+		return crashRestart
 	}
+	if uptime > stableUptime {
+		s.cleanExits = 0
+	}
+	s.cleanExits++
+	d := minCleanBackoff
+	for i := 1; i < s.cleanExits && d < maxCleanBackoff; i++ {
+		d *= 2
+	}
+	return min(d, maxCleanBackoff)
 }
 
 func (s *Supervisor) StartNormal() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stopping || s.mode == ModeLoggingIn {
-		return
-	}
-	if s.normalCmd != nil && s.normalCmd.Process != nil {
+	if s.stopping || s.mode != ModeIdle {
 		return
 	}
 
-	cmd := exec.Command(s.wrapperBin, s.normalArgs...)
-	cmd.Env = os.Environ()
-	stdout, err := cmd.StdoutPipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	exited, err := s.run(ctx, s.normalArgs, func(line string) {
+		log.Printf("[wrapper] %s", line)
+	})
 	if err != nil {
-		log.Printf("[supervisor] error creating stdout pipe for normal wrapper: %v", err)
-		return
-	}
-	cmd.Stderr = cmd.Stdout
-
-	if err := cmd.Start(); err != nil {
+		cancel()
 		log.Printf("[supervisor] failed to start wrapper: %v", err)
 		return
 	}
-
-	s.normalCmd = cmd
+	p := &proc{cancel: cancel, done: make(chan struct{})}
+	s.normal = p
 	s.mode = ModeNormal
-	s.lastStartTime = time.Now()
-	log.Printf("[supervisor] normal wrapper started with PID %d", cmd.Process.Pid)
+	started := time.Now()
+	log.Printf("[supervisor] normal wrapper started")
 
 	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			text := scanner.Text()
-			log.Printf("[wrapper] %s", text)
-			s.broadcastLog(text)
-		}
-
-		err := cmd.Wait()
+		err := <-exited
+		cancel()
 		s.mu.Lock()
-		s.normalCmd = nil
-		stopping := s.stopping
-		mode := s.mode
+		// stopNormal detaches p before cancelling, so a mismatch means the
+		// exit was requested and must not trigger a restart.
+		unexpected := s.normal == p && !s.stopping
+		var delay time.Duration
+		if unexpected {
+			s.normal = nil
+			s.mode = ModeIdle
+			delay = s.restartDelay(err, time.Since(started))
+		}
 		s.mu.Unlock()
-
-		if stopping {
+		close(p.done)
+		if !unexpected {
 			return
 		}
-
-		if mode == ModeLoggingIn {
-			// Normal process stopped because login was requested
-			return
-		}
-
-		exitCode := 0
-		if err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = 1
-			}
-		}
-
-		log.Printf("[supervisor] normal wrapper exited with code %d", exitCode)
-
-		s.mu.Lock()
-		uptime := time.Since(s.lastStartTime)
-		s.mode = ModeIdle
-
-		if exitCode == 0 {
-			// Clean exit — likely no credentials yet, or session ended.
-			// Use exponential backoff for consecutive clean exits to
-			// avoid a tight restart loop, but always restart so the
-			// wrapper comes back when credentials are supplied.
-			if uptime > 30*time.Second {
-				// Ran for a meaningful duration → reset backoff
-				s.cleanExitCount = 0
-			}
-			s.cleanExitCount++
-			delay := time.Duration(5<<(s.cleanExitCount-1)) * time.Second
-			if delay > 60*time.Second {
-				delay = 60 * time.Second
-			}
-			s.mu.Unlock()
-			log.Printf("[supervisor] wrapper exited cleanly, restarting in %s...", delay)
-			time.Sleep(delay)
-		} else {
-			s.cleanExitCount = 0
-			s.mu.Unlock()
-			log.Printf("[supervisor] wrapper crashed, restarting in 3s...")
-			time.Sleep(3 * time.Second)
-		}
+		log.Printf("[supervisor] wrapper exited (%v), restarting in %s", exitDesc(err), delay)
+		time.Sleep(delay)
 		s.StartNormal()
 	}()
 }
 
-func (s *Supervisor) stopNormalLocked() {
-	if s.normalCmd != nil && s.normalCmd.Process != nil {
-		proc := s.normalCmd.Process
-		log.Printf("[supervisor] stopping normal wrapper (PID %d)...", proc.Pid)
-		_ = proc.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() {
-			_ = s.normalCmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			log.Printf("[supervisor] normal wrapper did not stop in 3s; sending SIGKILL")
-			_ = proc.Kill()
-		}
-		s.normalCmd = nil
+// stopNormal stops the normal wrapper without scheduling a restart and waits
+// for it to exit. Callers must not hold s.mu.
+func (s *Supervisor) stopNormal() {
+	s.mu.Lock()
+	p := s.normal
+	s.normal = nil
+	s.mu.Unlock()
+	if p == nil {
+		return
 	}
+	p.cancel()
+	<-p.done
 }
 
-func (s *Supervisor) CancelLogin() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mode != ModeLoggingIn {
-		return nil
+func exitDesc(err error) string {
+	if err == nil {
+		return "exit status 0"
 	}
-	log.Printf("[supervisor] cancelling active sign-in")
-	if s.loginCancel != nil {
-		s.loginCancel()
-	}
-	if s.loginCmd != nil && s.loginCmd.Process != nil {
-		_ = s.loginCmd.Process.Kill()
-	}
-	s.clear2faFiles()
-	s.mode = ModeIdle
-	go s.StartNormal()
-	return nil
+	return err.Error()
 }
 
 type LoginRequest struct {
@@ -262,51 +257,28 @@ type TwoFaRequest struct {
 	Code string `json:"code"`
 }
 
-type StatusResponse struct {
-	Ok           bool     `json:"ok"`
-	Mode         string   `json:"mode"`
-	Running      bool     `json:"running"`
-	LastLoginErr string   `json:"lastLoginErr,omitempty"`
-	RecentLogs   []string `json:"recentLogs,omitempty"`
+type HealthResponse struct {
+	Ok      bool   `json:"ok"`
+	Mode    string `json:"mode"`
+	Running bool   `json:"running"`
 }
 
 func (s *Supervisor) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	mode := string(s.mode)
-	running := (s.normalCmd != nil && s.normalCmd.Process != nil) ||
-		(s.loginCmd != nil && s.loginCmd.Process != nil)
-	s.mu.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(StatusResponse{
+	resp := HealthResponse{
 		Ok:      true,
-		Mode:    mode,
-		Running: running,
-	})
-}
-
-func (s *Supervisor) handleStatus(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	mode := string(s.mode)
-	running := (s.normalCmd != nil && s.normalCmd.Process != nil) ||
-		(s.loginCmd != nil && s.loginCmd.Process != nil)
-	lastErr := s.lastLoginErr
-	lines := strings.Split(s.collectedLogs.String(), "\n")
-	if len(lines) > 50 {
-		lines = lines[len(lines)-50:]
+		Mode:    string(s.mode),
+		Running: s.normal != nil || s.mode == ModeLoggingIn,
 	}
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(StatusResponse{
-		Ok:           true,
-		Mode:         mode,
-		Running:      running,
-		LastLoginErr: lastErr,
-		RecentLogs:   lines,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// handleLogin runs a sign-in worker and streams its output. The worker lives
+// exactly as long as the request: it is stopped on success, and a client
+// disconnect cancels it.
 func (s *Supervisor) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -314,7 +286,7 @@ func (s *Supervisor) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
@@ -323,120 +295,76 @@ func (s *Supervisor) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
 	s.mu.Lock()
-	if s.mode == ModeLoggingIn {
+	if s.stopping || s.mode == ModeLoggingIn {
 		s.mu.Unlock()
 		http.Error(w, "A sign-in is already in progress", http.StatusConflict)
 		return
 	}
-
 	s.mode = ModeLoggingIn
-	s.stopNormalLocked()
-	s.clear2faFiles()
-	s.collectedLogs.Reset()
-	s.lastLoginErr = ""
-
-	ctx, cancel := context.WithCancel(context.Background())
 	s.loginCancel = cancel
-
-	loginArg := fmt.Sprintf("%s:%s", req.Email, req.Password)
-	cmd := exec.CommandContext(ctx, s.wrapperBin, "-L", loginArg, "-F", "-H", "0.0.0.0")
-	cmd.Env = os.Environ()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		s.mode = ModeIdle
-		cancel()
-		s.mu.Unlock()
-		http.Error(w, fmt.Sprintf("Failed to initialize login pipe: %v", err), http.StatusInternalServerError)
-		go s.StartNormal()
-		return
-	}
-	cmd.Stderr = cmd.Stdout
-
-	if err := cmd.Start(); err != nil {
-		s.mode = ModeIdle
-		cancel()
-		s.mu.Unlock()
-		http.Error(w, fmt.Sprintf("Failed to start login process: %v", err), http.StatusInternalServerError)
-		go s.StartNormal()
-		return
-	}
-
-	s.loginCmd = cmd
-	logCh := make(chan string, 100)
-	s.loginListeners[logCh] = struct{}{}
 	s.mu.Unlock()
 
-	log.Printf("[supervisor] login process started with PID %d", cmd.Process.Pid)
-
-	// Stream response back chunked
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Transfer-Encoding", "chunked")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	flusher, canFlush := w.(http.Flusher)
-
-	// Goroutine to read command stdout and feed listeners
-	loginDone := make(chan struct{})
-	go func() {
-		defer close(loginDone)
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			text := scanner.Text()
-			s.broadcastLog(text)
-			if strings.Contains(strings.ToLower(text), "account info cached successfully") {
-				log.Printf("[supervisor] login succeeded: account info cached successfully")
-			}
-		}
-
-		err := cmd.Wait()
-		if err != nil {
-			log.Printf("[supervisor] login process exited: %v", err)
-		} else {
-			log.Printf("[supervisor] login process completed cleanly")
-		}
-
+	defer func() {
 		s.mu.Lock()
-		s.loginCmd = nil
-		s.clear2faFiles()
 		s.mode = ModeIdle
-		cancel()
+		s.loginCancel = nil
 		s.mu.Unlock()
-
-		go s.StartNormal()
+		s.clear2faFiles()
+		s.StartNormal()
 	}()
 
-	// Feed client from logCh until login completes or client disconnects
+	s.stopNormal()
+	s.clear2faFiles()
+
+	lines := make(chan string, 64)
+	args := append([]string{"-L", req.Email + ":" + req.Password, "-F"}, s.normalArgs...)
+	exited, err := s.run(ctx, args, func(line string) {
+		select {
+		case lines <- line:
+		case <-ctx.Done():
+		}
+		if strings.Contains(strings.ToLower(line), loginSuccessMsg) {
+			cancel()
+		}
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to start login process: %v", err), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[supervisor] sign-in worker started")
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	write := func(line string) {
+		_, _ = fmt.Fprintf(w, "%s\n", line)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+
 	for {
 		select {
-		case line, ok := <-logCh:
-			if !ok {
-				return
-			}
-			_, _ = fmt.Fprintf(w, "%s\n", line)
-			if canFlush {
-				flusher.Flush()
-			}
-		case <-loginDone:
-			// Drain remaining logs
+		case line := <-lines:
+			write(line)
+		case err := <-exited:
 			for {
 				select {
-				case line := <-logCh:
-					_, _ = fmt.Fprintf(w, "%s\n", line)
-					if canFlush {
-						flusher.Flush()
-					}
+				case line := <-lines:
+					write(line)
 				default:
-					s.mu.Lock()
-					delete(s.loginListeners, logCh)
-					s.mu.Unlock()
+					log.Printf("[supervisor] sign-in worker exited (%s)", exitDesc(err))
 					return
 				}
 			}
-		case <-r.Context().Done():
-			s.mu.Lock()
-			delete(s.loginListeners, logCh)
-			s.mu.Unlock()
-			return
 		}
 	}
 }
@@ -448,8 +376,16 @@ func (s *Supervisor) handle2FA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req TwoFaRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	loggingIn := s.mode == ModeLoggingIn
+	s.mu.Unlock()
+	if !loggingIn {
+		http.Error(w, "No sign-in in progress", http.StatusConflict)
 		return
 	}
 
@@ -458,54 +394,17 @@ func (s *Supervisor) handle2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[supervisor] 2FA code committed to %s", s.get2faFilePath())
+	log.Printf("[supervisor] 2FA code committed")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
-func (s *Supervisor) handleCancel(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	_ = s.CancelLogin()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
-func (s *Supervisor) handleEvents(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	ch := make(chan string, 100)
-	s.mu.Lock()
-	s.subscribers[ch] = struct{}{}
-	s.mu.Unlock()
-
-	defer func() {
-		s.mu.Lock()
-		delete(s.subscribers, ch)
-		s.mu.Unlock()
-	}()
-
-	notify := r.Context().Done()
-	for {
-		select {
-		case line := <-ch:
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", line)
-			flusher.Flush()
-		case <-notify:
-			return
-		}
-	}
+func (s *Supervisor) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/login", s.handleLogin)
+	mux.HandleFunc("/login/2fa", s.handle2FA)
+	return mux
 }
 
 func (s *Supervisor) Stop() {
@@ -514,58 +413,35 @@ func (s *Supervisor) Stop() {
 	if s.loginCancel != nil {
 		s.loginCancel()
 	}
-	if s.loginCmd != nil && s.loginCmd.Process != nil {
-		_ = s.loginCmd.Process.Kill()
-	}
-	s.stopNormalLocked()
-	s.clear2faFiles()
 	s.mu.Unlock()
+	s.stopNormal()
 }
 
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// All arguments are passed through to the wrapper; the supervisor itself is
+// configured through the environment.
 func main() {
-	port := flag.Int("port", 40020, "Port for supervisor HTTP control server")
-	host := flag.String("host", "0.0.0.0", "Host for supervisor HTTP control server")
-	wrapperBin := flag.String("wrapper", "/app/wrapper", "Path to wrapper binary")
-	dataDir := flag.String("data", "/app/rootfs/data", "Path to wrapper data dir")
-	flag.Parse()
-
-	if envPort := os.Getenv("SUPERVISOR_PORT"); envPort != "" {
-		var p int
-		if _, err := fmt.Sscanf(envPort, "%d", &p); err == nil && p > 0 {
-			*port = p
-		}
-	}
-	if envBin := os.Getenv("WRAPPER_BIN"); envBin != "" {
-		*wrapperBin = envBin
-	}
-	if envData := os.Getenv("WRAPPER_DATA_DIR"); envData != "" {
-		*dataDir = envData
-	}
-
-	normalArgs := flag.Args()
+	addr := envOr("SUPERVISOR_HOST", "0.0.0.0") + ":" + envOr("SUPERVISOR_PORT", "40020")
+	normalArgs := os.Args[1:]
 	if len(normalArgs) == 0 {
 		normalArgs = []string{"-H", "0.0.0.0"}
 	}
 
-	sup := NewSupervisor(*wrapperBin, *dataDir, normalArgs)
+	sup := NewSupervisor(
+		envOr("WRAPPER_BIN", "/app/wrapper"),
+		envOr("WRAPPER_DATA_DIR", "/app/rootfs/data"),
+		normalArgs,
+	)
+	server := &http.Server{Addr: addr, Handler: sup.routes()}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", sup.handleHealth)
-	mux.HandleFunc("/status", sup.handleStatus)
-	mux.HandleFunc("/login", sup.handleLogin)
-	mux.HandleFunc("/login/2fa", sup.handle2FA)
-	mux.HandleFunc("/login/cancel", sup.handleCancel)
-	mux.HandleFunc("/login/events", sup.handleEvents)
-
-	server := &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", *host, *port),
-		Handler: mux,
-	}
-
-	// Catch shutdown signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
 		<-sigCh
 		log.Printf("[supervisor] shutting down...")
@@ -575,10 +451,9 @@ func main() {
 		_ = server.Shutdown(ctx)
 	}()
 
-	// Start normal wrapper on boot
 	sup.StartNormal()
 
-	log.Printf("[supervisor] HTTP control server listening on %s:%d", *host, *port)
+	log.Printf("[supervisor] HTTP control server listening on %s", addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("[supervisor] server error: %v", err)
 	}
