@@ -186,12 +186,14 @@ export function getJob(id) {
 }
 
 // amdp's progress bars produce hundreds of updates per second; the UI only
-// needs the latest state a few times a second.
+// needs the latest percentage a few times a second. Anything else (status,
+// message, current track, real log lines) goes out immediately.
 const JOB_UPDATE_MIN_INTERVAL_MS = 250
 const PROGRESS_LOG_MIN_INTERVAL_MS = 500
 const lastJobEmitAt = new Map()
 const pendingJobEmit = new Map()
 const lastProgressLogAt = new Map()
+const pendingProgressLog = new Map()
 
 function emitJobUpdate(j, immediate) {
   const pending = pendingJobEmit.get(j.id)
@@ -200,6 +202,7 @@ function emitJobUpdate(j, immediate) {
     clearTimeout(pending)
     pendingJobEmit.delete(j.id)
     if (j.status === 'done' || j.status === 'failed') {
+      flushProgressLog(j.id)
       lastJobEmitAt.delete(j.id)
       lastProgressLogAt.delete(j.id)
     } else {
@@ -219,14 +222,24 @@ function emitJobUpdate(j, immediate) {
   )
 }
 
+// Emits the newest progress line that throttling held back, so the terminal
+// still shows where each progress bar ended.
+function flushProgressLog(jobId) {
+  const held = pendingProgressLog.get(jobId)
+  if (!held) return
+  pendingProgressLog.delete(jobId)
+  emitEvent('job.log', held)
+}
+
 function updateJob(id, patch) {
   const j = state.jobs.get(id)
   if (!j) return
-  const statusChanged =
-    patch.status !== undefined && patch.status !== j.status
+  const changed = (key) => patch[key] !== undefined && patch[key] !== j[key]
+  const statusChanged = changed('status')
+  const visibleChange = statusChanged || changed('message') || changed('currentTrack') || changed('error')
   Object.assign(j, patch, { updatedAt: Date.now() })
   persistJob(j, statusChanged)
-  emitJobUpdate(j, statusChanged)
+  emitJobUpdate(j, visibleChange)
 }
 
 const PERSIST_MIN_INTERVAL_MS = 1_000
@@ -843,7 +856,7 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine, catalogPlaylistTracksIfAnyOwned }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine, catalogPlaylistTracksIfAnyOwned, updateJob, handleAmdpLine, createProgressState, state }
 
 // Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
 // artist-name-independent anchor (collab albums import under a different
@@ -1971,12 +1984,21 @@ function handleAmdpLine(job, line, which, progressState) {
     job.stats.failed = (job.stats.failed || 0) + 1
   }
 
+  const event = { id: job.id, line, which }
   if (isProgressOnlyLine(line)) {
     const now = Date.now()
-    if (now - (lastProgressLogAt.get(job.id) || 0) < PROGRESS_LOG_MIN_INTERVAL_MS) return
+    if (now - (lastProgressLogAt.get(job.id) || 0) < PROGRESS_LOG_MIN_INTERVAL_MS) {
+      pendingProgressLog.set(job.id, event)
+      return
+    }
+    pendingProgressLog.delete(job.id)
     lastProgressLogAt.set(job.id, now)
+  } else {
+    // a real line ends the current bar; the next bar's first frame shows
+    flushProgressLog(job.id)
+    lastProgressLogAt.delete(job.id)
   }
-  emitEvent('job.log', { id: job.id, line, which })
+  emitEvent('job.log', event)
 }
 
 function isProgressOnlyLine(line) {
