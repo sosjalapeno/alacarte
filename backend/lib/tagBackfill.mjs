@@ -120,7 +120,7 @@ async function collectFlacs(dir, out) {
 }
 
 async function resolveFile(file, { searchCatalog: search, settings }) {
-    const meta = readAudioMetaTags(file)
+    const meta = await readAudioMetaTags(file)
     const artist = meta.albumArtist || meta.artist
     const title = meta.title
     if (!artist || !title) return null
@@ -213,7 +213,7 @@ async function runBackfill(deps) {
                     continue
                 }
                 if (!state.dryRun) {
-                    const ok = writeAudioIdentityTags(file, {
+                    const ok = await writeAudioIdentityTags(file, {
                         isrc: needsIsrc ? match.isrc : null,
                         upc: needsUpc ? match.upc : null,
                     })

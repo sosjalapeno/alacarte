@@ -2,7 +2,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import fsp from 'node:fs/promises'
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 import { emitEvent } from './eventBus.mjs'
 import { readSettings, readAppleCreds } from './settingsStore.mjs'
@@ -36,7 +37,7 @@ import { findSongPathInLibrary, getAlbumTrackPresence, getAlbumVersionGroups, ha
 import { writePlaylistM3U } from './playlistExport.mjs'
 import { getDb } from './db.mjs'
 import { normalizeForMatchKey } from './libraryMatchKey.mjs'
-import { writeAudioIdentityTags } from './audioTags.mjs'
+import { readAudioMetaTags, writeAudioIdentityTags } from './audioTags.mjs'
 import { probeWrapperPorts } from './wrapperHealth.mjs'
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
@@ -841,7 +842,7 @@ async function stampAlbumIdentityTags(dir, upc, tracks) {
       const track = matchTrackForFile(name, tracks)
       const isrc = track?.isrc || null
       if (!isrc && !upc) continue
-      writeAudioIdentityTags(path.join(dir, name), { isrc, upc })
+      await writeAudioIdentityTags(path.join(dir, name), { isrc, upc })
     }
   } catch (err) {
     console.error('identity tag stamping failed:', err.message)
@@ -902,7 +903,7 @@ async function runJob(job) {
     throwIfCancelled(job)
     updateJob(job.id, { status: 'running', message: 'Preparing' })
     throwIfCancelled(job)
-    const mp4box = probeMp4Box()
+    const mp4box = await probeMp4Box()
     if (!mp4box.ok) {
       throw new Error(
         `MP4Box preflight failed: ${mp4box.error}. Rebuild the web image so apple-music-dl can finalize MP4 files.`,
@@ -1256,7 +1257,7 @@ async function runJob(job) {
       await copyFolderArtIfAny(albumPath, finalDir)
       if (job.isrc || job.upc) {
         for (const fn of audioFiles) {
-          writeAudioIdentityTags(path.join(finalDir, fn), {
+          await writeAudioIdentityTags(path.join(finalDir, fn), {
             isrc: job.isrc,
             upc: job.upc,
           })
@@ -1690,7 +1691,7 @@ async function runLibraryPlaylistFill({
     })
     if (fillTrackIsrc) {
       for (const importedPath of importedHere) {
-        writeAudioIdentityTags(importedPath, { isrc: fillTrackIsrc })
+        await writeAudioIdentityTags(importedPath, { isrc: fillTrackIsrc })
       }
     }
     for (const p of importedHere) importedPaths.push(p)
@@ -1894,25 +1895,21 @@ function extractBracketTitle(line) {
   return m ? m[1].trim() : null
 }
 
-function probeMp4Box() {
+const execFileAsync = promisify(execFile)
+
+async function probeMp4Box() {
   try {
-    const r = spawnSync('MP4Box', ['-version'], {
-      encoding: 'utf8',
-      timeout: 2500,
-    })
-    const out = `${r.stdout || ''}\n${r.stderr || ''}`
-    if (r.status === 0 && /GPAC version/i.test(out)) {
-      return { ok: true, error: null }
-    }
-    if (r.error?.code === 'ENOENT') {
-      return { ok: false, error: 'executable not found in PATH' }
-    }
+    const { stdout, stderr } = await execFileAsync('MP4Box', ['-version'], { timeout: 2500 })
+    if (/GPAC version/i.test(`${stdout}\n${stderr}`)) return { ok: true, error: null }
+    return { ok: false, error: 'unexpected MP4Box -version output' }
+  } catch (err) {
+    if (err.code === 'ENOENT') return { ok: false, error: 'executable not found in PATH' }
+    // MP4Box -version exits non-zero on some builds while still printing it
+    if (/GPAC version/i.test(`${err.stdout || ''}\n${err.stderr || ''}`)) return { ok: true, error: null }
     return {
       ok: false,
-      error: `exit ${r.status ?? 'unknown'}${r.signal ? ` (${r.signal})` : ''}`,
+      error: `exit ${err.code ?? 'unknown'}${err.signal ? ` (${err.signal})` : ''}`,
     }
-  } catch (err) {
-    return { ok: false, error: err.message || 'unknown preflight error' }
   }
 }
 
@@ -2187,7 +2184,7 @@ async function importPlaylistTracks({ job, jobStaging, onProgress }) {
       .split(path.sep)
       .filter(Boolean)
     const parsed = inferArtistAlbumFromPath(relParts)
-    const tags = await probeAudioTags(srcPath)
+    const tags = await readAudioMetaTags(srcPath)
 
     const artistName = tags.artist || parsed.artist || job.artist || 'Unknown Artist'
     const albumName = tags.album || parsed.album || null
@@ -2261,45 +2258,6 @@ function inferArtistAlbumFromPath(parts) {
     }
   }
   return { artist: null, album: null }
-}
-
-async function probeAudioTags(filePath) {
-  const result = spawnSync(
-    'ffprobe',
-    [
-      '-v',
-      'error',
-      '-show_entries',
-      'format_tags=artist,album,title',
-      '-of',
-      'json',
-      filePath,
-    ],
-    {
-      encoding: 'utf8',
-      timeout: 5000,
-    },
-  )
-  if (result.status !== 0 || !result.stdout) {
-    return { artist: null, album: null, title: null }
-  }
-  try {
-    const parsed = JSON.parse(result.stdout)
-    const tags = parsed?.format?.tags || {}
-    return {
-      artist: cleanTag(tags.artist),
-      album: cleanTag(tags.album),
-      title: cleanTag(tags.title),
-    }
-  } catch {
-    return { artist: null, album: null, title: null }
-  }
-}
-
-function cleanTag(value) {
-  if (typeof value !== 'string') return null
-  const s = value.trim()
-  return s ? s : null
 }
 
 // amdp saves lyrics before decrypting, so a failed track leaves its .lrc behind.

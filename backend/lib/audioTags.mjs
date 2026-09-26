@@ -1,7 +1,10 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * Normalize ISRC: uppercase, strip hyphens/spaces.
@@ -229,37 +232,25 @@ export function readAudioIdentityTagsSync(filePath) {
  * remux (lossless, keeps all existing metadata). Fail-soft: returns false on
  * any problem and never touches the original file on failure.
  */
-export function writeAudioIdentityTags(filePath, { isrc, upc } = {}) {
-  let tmp = null
+export async function writeAudioIdentityTags(filePath, { isrc, upc } = {}) {
+  if (!/\.flac$/i.test(filePath)) return false
+  const isrcNorm = normalizeIsrc(isrc)
+  const upcNorm = normalizeUpc(upc)
+  if (!isrcNorm && !upcNorm) return false
+  const tmp = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.stamp-tmp.flac`,
+  )
+  const args = ['-y', '-nostdin', '-v', 'error', '-i', filePath, '-map_metadata', '0', '-c', 'copy']
+  if (isrcNorm) args.push('-metadata', `ISRC=${isrcNorm}`)
+  if (upcNorm) args.push('-metadata', `BARCODE=${upcNorm}`)
+  args.push(tmp)
   try {
-    if (!/\.flac$/i.test(filePath)) return false
-    const isrcNorm = normalizeIsrc(isrc)
-    const upcNorm = normalizeUpc(upc)
-    if (!isrcNorm && !upcNorm) return false
-    tmp = path.join(
-      path.dirname(filePath),
-      `.${path.basename(filePath)}.stamp-tmp.flac`,
-    )
-    const args = ['-y', '-nostdin', '-i', filePath, '-map_metadata', '0', '-c', 'copy']
-    if (isrcNorm) args.push('-metadata', `ISRC=${isrcNorm}`)
-    if (upcNorm) args.push('-metadata', `BARCODE=${upcNorm}`)
-    args.push(tmp)
-    const res = spawnSync('ffmpeg', args, {
-      encoding: 'utf8',
-      timeout: 60_000,
-    })
-    if (res.status !== 0 || !fs.existsSync(tmp)) {
-      fs.unlinkSync(tmp)
-      return false
-    }
-    fs.renameSync(tmp, filePath)
+    await execFileAsync('ffmpeg', args, { timeout: 60_000 })
+    await fsp.rename(tmp, filePath)
     return true
   } catch {
-    if (tmp) {
-      try {
-        fs.unlinkSync(tmp)
-      } catch {}
-    }
+    await fsp.rm(tmp, { force: true }).catch(() => {})
     return false
   }
 }
@@ -268,10 +259,10 @@ export function writeAudioIdentityTags(filePath, { isrc, upc } = {}) {
  * Read artist / album / title / album_artist tags via ffprobe. Fail-soft.
  * Vorbis comment keys come back in varying cases, so lookup is caseless.
  */
-export function readAudioMetaTags(filePath) {
+export async function readAudioMetaTags(filePath) {
   const empty = { artist: null, album: null, title: null, albumArtist: null }
   try {
-    const res = spawnSync(
+    const { stdout } = await execFileAsync(
       'ffprobe',
       [
         '-v',
@@ -282,10 +273,9 @@ export function readAudioMetaTags(filePath) {
         'json',
         filePath,
       ],
-      { encoding: 'utf8', timeout: 10_000 },
+      { timeout: 10_000 },
     )
-    if (res.status !== 0 || !res.stdout) return empty
-    const raw = JSON.parse(res.stdout)?.format?.tags || {}
+    const raw = JSON.parse(stdout)?.format?.tags || {}
     const tags = {}
     for (const [key, value] of Object.entries(raw)) {
       tags[key.toLowerCase()] = value

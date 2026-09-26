@@ -33,7 +33,7 @@ function makeRealFlac(dir, name, { title } = {}) {
     return abs
 }
 
-test('writeAudioIdentityTags stamps isrc and barcode without losing metadata', (t) => {
+test('writeAudioIdentityTags stamps isrc and barcode without losing metadata', async (t) => {
     if (!hasFfmpeg) {
         t.skip('ffmpeg not available on this host')
         return
@@ -41,7 +41,7 @@ test('writeAudioIdentityTags stamps isrc and barcode without losing metadata', (
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alacarte-tagwrite-'))
     const file = makeRealFlac(dir, '01. Song.flac', { title: 'Song' })
 
-    const ok = writeAudioIdentityTags(file, {
+    const ok = await writeAudioIdentityTags(file, {
         isrc: 'us-um7-25-00427',
         upc: '00888072804555',
     })
@@ -51,11 +51,11 @@ test('writeAudioIdentityTags stamps isrc and barcode without losing metadata', (
     assert.equal(identity.isrc, 'USUM72500427')
     assert.equal(identity.upc, '00888072804555')
 
-    const meta = readAudioMetaTags(file)
+    const meta = await readAudioMetaTags(file)
     assert.equal(meta.title, 'Song')
 })
 
-test('writeAudioIdentityTags rejects non-flac and empty input', (t) => {
+test('writeAudioIdentityTags rejects non-flac and empty input', async (t) => {
     if (!hasFfmpeg) {
         t.skip('ffmpeg not available on this host')
         return
@@ -63,10 +63,10 @@ test('writeAudioIdentityTags rejects non-flac and empty input', (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alacarte-tagwrite-'))
     const m4a = path.join(dir, 'song.m4a')
     fs.writeFileSync(m4a, 'x')
-    assert.equal(writeAudioIdentityTags(m4a, { isrc: 'USUM72500427' }), false)
+    assert.equal(await writeAudioIdentityTags(m4a, { isrc: 'USUM72500427' }), false)
 
     const flac = makeRealFlac(dir, 'song.flac')
-    assert.equal(writeAudioIdentityTags(flac, {}), false)
+    assert.equal(await writeAudioIdentityTags(flac, {}), false)
     assert.equal(fs.existsSync(flac), true)
 })
 
