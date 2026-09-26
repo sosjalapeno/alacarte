@@ -1,6 +1,10 @@
-FROM debian:stable-slim
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS supervisor-builder
+WORKDIR /src
+COPY supervisor/ .
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -ldflags="-s -w" -o /supervisor .
 
-ENV args=""
+FROM debian:stable-slim
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends gcc libc6-dev \
@@ -9,6 +13,7 @@ RUN apt-get update \
 COPY ./rootfs /app/rootfs
 COPY ./wrapper /app
 COPY ./preload_host.c ./preload_libdl_stub.c ./wrapper_login_fix.c ./wrapper-entrypoint.sh /app/
+COPY --from=supervisor-builder /supervisor /app/supervisor
 WORKDIR /app
 
 RUN gcc -shared -fPIC -O2 \
@@ -23,8 +28,9 @@ RUN gcc -shared -fPIC -O2 \
       -L/app/rootfs/system/lib64 -L/tmp \
       -o /app/rootfs/app/libwrapper_login_fix.so /app/wrapper_login_fix.c \
       -Wl,--no-as-needed -lc -ldl \
-  && chmod +x /app/wrapper-entrypoint.sh
+  && chmod +x /app/wrapper-entrypoint.sh /app/supervisor
 
-CMD ["bash", "-c", "/app/wrapper $args"]
+ENTRYPOINT ["/app/wrapper-entrypoint.sh"]
+CMD ["-H", "0.0.0.0"]
 
-EXPOSE 10020 20020 30020
+EXPOSE 10020 20020 30020 40020

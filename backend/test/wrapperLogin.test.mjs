@@ -1,18 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import http from 'node:http'
 
 import {
   buildFailureTail,
   extractWrapperFailureReason,
   formatUnexpectedExitFallback,
-  formatWorkerExitReason,
-  isSpuriousWaitResult,
   logsIndicateTwoFa,
-  parseAttachChunk,
   redactWrapperOutput,
   TWO_FA_HINT,
 } from '../lib/wrapperLoginDiagnostics.mjs'
-import { validate2faCode } from '../lib/wrapperLogin.mjs'
+import {
+  clearHardBlock,
+  validate2faCode,
+  isWrapperReachable,
+  startWrapperLogin,
+  submit2FA,
+  cancelLogin,
+  getLoginStatus,
+} from '../lib/wrapperLogin.mjs'
 
 test('uses StoreServices diagnostics instead of the generic response type', () => {
   const reason = extractWrapperFailureReason(`
@@ -153,37 +159,6 @@ test('keeps StoreServices errors ahead of 2FA progress lines', () => {
   )
 })
 
-test('formats post-2FA worker exits with signal hints', () => {
-  assert.equal(
-    formatWorkerExitReason({ statusCode: 139, twoFaSubmitted: true }),
-    'Sign-in worker exited after accepting 2FA (exit 139) (SIGSEGV)',
-  )
-  assert.equal(
-    formatWorkerExitReason({ statusCode: 0, oomKilled: true, twoFaSubmitted: true }),
-    'Sign-in worker was killed by OOM after accepting 2FA',
-  )
-  assert.equal(formatWorkerExitReason({ statusCode: -1 }), null)
-})
-
-test('ignores wait results that never saw a started container', () => {
-  assert.equal(
-    isSpuriousWaitResult({ statusCode: 0, started: false, running: false }),
-    true,
-  )
-  assert.equal(
-    isSpuriousWaitResult({ statusCode: -1, started: false, running: false }),
-    true,
-  )
-  assert.equal(
-    isSpuriousWaitResult({ statusCode: 0, started: true, running: true }),
-    true,
-  )
-  assert.equal(
-    isSpuriousWaitResult({ statusCode: 0, started: true, running: false }),
-    false,
-  )
-})
-
 test('detects 2FA from the enter-code banner or credentialHandler', () => {
   assert.equal(
     logsIndicateTwoFa(
@@ -207,28 +182,13 @@ test('detects 2FA from the enter-code banner or credentialHandler', () => {
 
 test('keeps unexpected-exit fallbacks from being empty', () => {
   assert.equal(
-    formatUnexpectedExitFallback({
-      statusCode: 0,
-      twoFaDetected: false,
-    }),
-    'Sign-in container exited unexpectedly (exit=0 oom=0 twoFaDetected=0)',
+    formatUnexpectedExitFallback({ twoFaDetected: false }),
+    'Sign-in worker exited unexpectedly (twoFaDetected=0)',
   )
   assert.equal(
-    formatUnexpectedExitFallback({
-      statusCode: -1,
-      twoFaDetected: true,
-    }),
-    'Sign-in ended without success after 2FA (exit=-1 oom=0 twoFaDetected=1)',
+    formatUnexpectedExitFallback({ twoFaDetected: true, twoFaSubmitted: true }),
+    'Sign-in ended without success after 2FA (twoFaDetected=1 twoFaSubmitted=1)',
   )
-})
-
-test('parses docker multiplexed attach frames and raw podman chunks', () => {
-  const payload = Buffer.from('[+] logging in...\n')
-  const header = Buffer.alloc(8)
-  header[0] = 1
-  header.writeUInt32BE(payload.length, 4)
-  assert.equal(parseAttachChunk(Buffer.concat([header, payload])), '[+] logging in...\n')
-  assert.equal(parseAttachChunk(payload), '[+] logging in...\n')
 })
 
 test('accepts only exactly six digits for 2FA codes', () => {
@@ -237,4 +197,155 @@ test('accepts only exactly six digits for 2FA codes', () => {
   assert.equal(validate2faCode('12345'), false)
   assert.equal(validate2faCode('1234567'), false)
   assert.equal(validate2faCode('12a456'), false)
+})
+
+const realFetch = globalThis.fetch
+test.before(() => {
+  globalThis.fetch = (url, opts) =>
+    String(url).startsWith('https://buy.itunes.apple.com/')
+      ? Promise.resolve(new Response(null, { status: 200 }))
+      : realFetch(url, opts)
+})
+test.after(() => {
+  globalThis.fetch = realFetch
+})
+
+async function withSupervisor(handler, fn) {
+  const server = http.createServer(handler)
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  process.env.AMDL_WRAPPER_HOST = '127.0.0.1'
+  process.env.AMDL_WRAPPER_SUPERVISOR_PORT = String(server.address().port)
+  try {
+    await fn()
+  } finally {
+    server.closeAllConnections()
+    await new Promise((r) => server.close(r))
+  }
+}
+
+async function waitFor(pred) {
+  for (let i = 0; i < 100 && !pred(); i++) {
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  assert.ok(pred())
+}
+
+// Opens the /login stream and resolves with the request once the supervisor
+// has written the given lines, leaving the stream open.
+function openLoginStream(lines, onRequest = () => {}) {
+  return (req, res) => {
+    if (req.url !== '/login' || req.method !== 'POST') return false
+    req.resume()
+    res.writeHead(200, { 'Content-Type': 'text/plain' })
+    for (const line of lines) res.write(`${line}\n`)
+    onRequest(req, res)
+    return true
+  }
+}
+
+test('isWrapperReachable checks the supervisor health endpoint', async () => {
+  await withSupervisor(
+    (req, res) => {
+      res.writeHead(req.url === '/health' ? 200 : 404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, mode: 'normal' }))
+    },
+    async () => assert.equal(await isWrapperReachable(), true),
+  )
+  assert.equal(await isWrapperReachable(), false)
+})
+
+test('startWrapperLogin resolves on success and closes the login stream', async () => {
+  let closed = false
+  const login = openLoginStream(['[+] logging in...', '[.] account info cached successfully'], (req) => {
+    req.socket.on('close', () => { closed = true })
+  })
+  await withSupervisor(login, async () => {
+    assert.deepEqual(await startWrapperLogin({ email: 'test@example.com', password: 'pass' }), { ok: true })
+    assert.equal(getLoginStatus().inProgress, false)
+    await waitFor(() => closed)
+  })
+})
+
+test('startWrapperLogin rejects with the wrapper diagnostic when the stream ends', async () => {
+  await withSupervisor(
+    (req, res) => {
+      openLoginStream([
+        '[+] logging in...',
+        '[.] dialogHandler: {title: Your Apple Account is disabled., message: Contact support.}',
+      ])(req, res)
+      res.end()
+    },
+    async () => {
+      await assert.rejects(
+        startWrapperLogin({ email: 'test@example.com', password: 'pass' }),
+        /Apple Account is disabled/,
+      )
+      clearHardBlock()
+    },
+  )
+})
+
+test('submit2FA forwards the code to the supervisor', async () => {
+  let receivedCode = null
+  let loginRes = null
+  const login = openLoginStream(
+    ['[!] Enter your 2FA code into rootfs/data/data/com.apple.android.music/files/2fa.txt'],
+    (_req, res) => { loginRes = res },
+  )
+  await withSupervisor(
+    (req, res) => {
+      if (login(req, res)) return
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        receivedCode = JSON.parse(body).code
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+        loginRes.write('[.] account info cached successfully\n')
+      })
+    },
+    async () => {
+      const loginPromise = startWrapperLogin({ email: 'user@example.com', password: 'secretpassword' })
+      await waitFor(() => getLoginStatus().status?.phase === '2fa-required')
+      assert.deepEqual(await submit2FA(' 654321 '), { ok: true })
+      assert.equal(receivedCode, '654321')
+      assert.deepEqual(await loginPromise, { ok: true })
+    },
+  )
+})
+
+test('submit2FA can be retried after the supervisor rejects it', async () => {
+  let attempts = 0
+  const login = openLoginStream(['[!] Enter your 2FA code into rootfs/data/2fa.txt'])
+  await withSupervisor(
+    (req, res) => {
+      if (login(req, res)) return
+      req.resume()
+      attempts++
+      res.writeHead(attempts === 1 ? 409 : 200)
+      res.end(attempts === 1 ? 'No sign-in in progress\n' : '{"ok":true}')
+    },
+    async () => {
+      const loginPromise = startWrapperLogin({ email: 'user@example.com', password: 'pw' })
+      await waitFor(() => getLoginStatus().status?.phase === '2fa-required')
+      await assert.rejects(submit2FA('111111'), /^Error: No sign-in in progress$/)
+      assert.deepEqual(await submit2FA('222222'), { ok: true })
+      cancelLogin()
+      await assert.rejects(loginPromise, /Cancelled/)
+    },
+  )
+})
+
+test('cancelLogin rejects the sign-in and closes the login stream', async () => {
+  let closed = false
+  const login = openLoginStream(['[+] logging in...'], (req) => {
+    req.socket.on('close', () => { closed = true })
+  })
+  await withSupervisor(login, async () => {
+    const loginPromise = startWrapperLogin({ email: 'user@example.com', password: 'secretpassword' })
+    await waitFor(() => getLoginStatus().status?.phase === 'signing-in')
+    assert.deepEqual(cancelLogin(), { ok: true })
+    await assert.rejects(loginPromise, /Cancelled/)
+    await waitFor(() => closed)
+  })
 })

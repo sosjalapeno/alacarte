@@ -15,7 +15,7 @@ import {
   submit2FA,
   cancelLogin,
   getLoginStatus,
-  isDockerReachable,
+  isWrapperReachable,
   clearHardBlock,
   getHardBlock,
 } from '../lib/wrapperLogin.mjs'
@@ -115,13 +115,13 @@ settingsRouter.post('/apple-credentials', async (req, res) => {
       return res.json({ ok: true, loginStarted: false })
     }
 
-    const dockerOk = await isDockerReachable()
-    if (!dockerOk) {
+    const wrapperOk = await isWrapperReachable()
+    if (!wrapperOk) {
       return res.json({
         ok: true,
         loginStarted: false,
         loginError:
-          'Docker socket not available in the web container — run first-time login from the host (see README).',
+          'Wrapper supervisor not reachable — check that the wrapper container is running.',
       })
     }
 
@@ -138,11 +138,11 @@ settingsRouter.get('/apple-credentials/login-status', (_req, res) => {
 
 settingsRouter.post('/apple-credentials/login', async (_req, res) => {
   try {
-    const dockerOk = await isDockerReachable()
-    if (!dockerOk) {
+    const wrapperOk = await isWrapperReachable()
+    if (!wrapperOk) {
       return res.status(503).json({
         error:
-          'Docker socket not available — mount /var/run/docker.sock into the web container',
+          'Wrapper supervisor not reachable — check that the wrapper container is running.',
       })
     }
     const s = await readSettings()

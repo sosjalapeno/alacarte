@@ -1,34 +1,18 @@
-import Docker from 'dockerode'
-import fs from 'node:fs'
-import fsp from 'node:fs/promises'
-import path from 'node:path'
-
 import { emitEvent } from './eventBus.mjs'
 import {
   buildFailureTail,
   extractWrapperFailureReason,
   formatUnexpectedExitFallback,
-  formatWorkerExitReason,
-  isSpuriousWaitResult,
   logsIndicateTwoFa,
-  parseAttachChunk,
   redactWrapperOutput,
   TWO_FA_HINT,
 } from './wrapperLoginDiagnostics.mjs'
 
-const docker = new Docker({ socketPath: '/var/run/docker.sock' })
-
-const WRAPPER_IMAGE = 'alacarte-wrapper:local'
-const WRAPPER_CONTAINER = 'alacarte-wrapper'
-const TEMP_CONTAINER = 'alacarte-wrapper-login'
-const DEFAULT_NETWORK = 'alacarte-net'
-const WRAPPER_DATA_IN_WEB = '/wrapper-data'
-const WRAPPER_DEV_BINDS = [
-  '/dev/null:/app/rootfs/dev/null',
-  '/dev/urandom:/app/rootfs/dev/urandom',
-  '/dev/random:/app/rootfs/dev/random',
-  '/dev/zero:/app/rootfs/dev/zero',
-]
+function getSupervisorUrl() {
+  const host = process.env.AMDL_WRAPPER_HOST || '127.0.0.1'
+  const port = process.env.AMDL_WRAPPER_SUPERVISOR_PORT || 40020
+  return `http://${host}:${port}`
+}
 
 const REACHABILITY_ERROR =
   "The initial Apple transport check failed. Check DNS, firewall, VPN or proxy routing, and Apple's service status before retrying."
@@ -54,113 +38,7 @@ function validate2faCode(c) {
 
 export { validate2faCode }
 
-async function safeRemoveContainer(name) {
-  try {
-    const c = docker.getContainer(name)
-    try {
-      await c.stop({ t: 3 })
-    } catch {
-      /* ignore */
-    }
-    try {
-      await c.remove({ force: true })
-    } catch {
-      /* ignore */
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-// Inspect the existing compose-managed wrapper container and snapshot everything
-// we need to later recreate an equivalent one: the data bind mount, the network,
-// and the compose labels. Callers MUST invoke this BEFORE removing the wrapper,
-// otherwise the data would default to bogus values that don't match the host.
-async function captureWrapperSpec() {
-  try {
-    const c = docker.getContainer(WRAPPER_CONTAINER)
-    const info = await c.inspect()
-    const dataMount = (info.Mounts || []).find(
-      (x) => x.Destination === '/app/rootfs/data',
-    )
-    const bind = dataMount?.Source
-      ? `${dataMount.Source}:/app/rootfs/data`
-      : null
-    const networkMode = info.HostConfig?.NetworkMode
-    const networks = Object.keys(info.NetworkSettings?.Networks || {})
-    const network =
-      networkMode && networkMode !== 'default' ? networkMode : networks[0] || null
-    const labels = info.Config?.Labels || null
-    return { bind, network, labels }
-  } catch {
-    return { bind: null, network: null, labels: null }
-  }
-}
-
-async function deriveWrapperBindFromWebContainer() {
-  try {
-    const selfId = process.env.HOSTNAME
-    if (!selfId) return null
-    const info = await docker.getContainer(selfId).inspect()
-    const wrapperMount = (info.Mounts || []).find(
-      (x) => x.Destination === WRAPPER_DATA_IN_WEB,
-    )
-    if (!wrapperMount?.Source) return null
-    return `${wrapperMount.Source}:/app/rootfs/data`
-  } catch {
-    return null
-  }
-}
-
-function resolveWrapperNetwork(spec) {
-  return spec?.network || process.env.AMDL_WRAPPER_NETWORK || DEFAULT_NETWORK
-}
-
-async function resolveWrapperBind(spec) {
-  if (spec?.bind) return spec.bind
-  const derived = await deriveWrapperBindFromWebContainer()
-  if (derived) return derived
-  throw new Error(
-    'cannot locate wrapper data volume — start the stack with `docker compose up -d` at least once so the wrapper container is created before attempting login',
-  )
-}
-
-function wrapperContainerCreateOpts({
-  name,
-  cmd,
-  network,
-  bind,
-  labels,
-  restartPolicy = { Name: 'no' },
-}) {
-  const opts = {
-    name,
-    Image: WRAPPER_IMAGE,
-    Platform: 'linux/amd64',
-    Env: ['LD_PRELOAD=/app/libwrapper_login_fix.so'],
-    Entrypoint: ['/app/wrapper-entrypoint.sh'],
-    Cmd: cmd,
-    ExposedPorts: {
-      '10020/tcp': {},
-      '20020/tcp': {},
-      '30020/tcp': {},
-    },
-    HostConfig: {
-      Binds: [bind, ...WRAPPER_DEV_BINDS],
-      NetworkMode: network,
-      AutoRemove: false,
-      RestartPolicy: restartPolicy,
-    },
-    Labels: labels,
-  }
-  if (network && !network.startsWith('container:')) {
-    opts.NetworkingConfig = { EndpointsConfig: { [network]: {} } }
-  }
-  return opts
-}
-
 let active = null
-
 let hardBlockReason = null
 
 function resetActive() {
@@ -181,100 +59,9 @@ function emitStatus(patch) {
   emitEvent('wrapper.login', active.status)
 }
 
-const WRAPPER_2FA_PATH =
-  '/app/rootfs/data/data/com.apple.android.music/files/2fa.txt'
-const WRAPPER_2FA_HOST_PATH = path.join(
-  WRAPPER_DATA_IN_WEB,
-  'data',
-  'com.apple.android.music',
-  'files',
-  '2fa.txt',
-)
-
-async function clearStale2faFile() {
-  const dir = path.dirname(WRAPPER_2FA_HOST_PATH)
-  const candidates = [
-    WRAPPER_2FA_HOST_PATH,
-    path.join(dir, '.2fa.txt.tmp'),
-    path.join(WRAPPER_DATA_IN_WEB, '2fa.txt'),
-    path.join(WRAPPER_DATA_IN_WEB, '.2fa.txt.tmp'),
-  ]
-  for (const p of candidates) {
-    try {
-      await fsp.unlink(p)
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-async function writeCodeAtomically(code) {
-  const dir = path.dirname(WRAPPER_2FA_HOST_PATH)
-  await fsp.mkdir(dir, { recursive: true })
-  const tmpPath = path.join(dir, `.2fa.txt.${process.pid}.${Date.now()}.tmp`)
-  try {
-    await fsp.writeFile(tmpPath, code, { mode: 0o600, encoding: 'utf8' })
-    await fsp.rename(tmpPath, WRAPPER_2FA_HOST_PATH)
-  } finally {
-    try {
-      await fsp.unlink(tmpPath)
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-async function writeCodeIntoContainer(container, code) {
-  const safe = String(code).trim()
-  if (!validate2faCode(safe)) {
-    throw new Error('Code must be exactly 6 digits')
-  }
-
-  if (wrapperDataMountExists()) {
-    await writeCodeAtomically(safe)
-    return
-  }
-
-  const exec = await container.exec({
-    Cmd: [
-      'sh',
-      '-c',
-      'tmp="$2.tmp.$$" && trap \'rm -f "$tmp"\' EXIT && umask 077 && printf %s "$1" > "$tmp" && mv "$tmp" "$2"',
-      'sh',
-      safe,
-      WRAPPER_2FA_PATH,
-    ],
-    AttachStdout: true,
-    AttachStderr: true,
-    Tty: false,
-  })
-  const stream = await exec.start({})
-  const chunks = []
-  await new Promise((resolve) => {
-    stream.on('data', (c) => chunks.push(c))
-    stream.on('end', resolve)
-    stream.on('close', resolve)
-  })
-  const info = await exec.inspect()
-  const output = Buffer.concat(chunks).toString('utf8')
-  console.error(
-    `[wrapper-login] 2FA file-drop exit=${info.ExitCode} output=${output.slice(0, 500)}`,
-  )
-  if (info.ExitCode !== 0) {
-    throw new Error(
-      `Failed to write 2FA file inside wrapper container (exit ${info.ExitCode})`,
-    )
-  }
-}
-
-const LOG_DRAIN_MS = 250
 // Once 2FA starts we are waiting on the user, not on Apple. Cover the
 // wrapper's extended code-entry window (4 minutes) with a generous margin.
 const TWO_FA_WINDOW_MS = 10 * 60_000
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 function markTwoFaDetected() {
   if (!active || active.twoFaDetected) return
@@ -288,11 +75,6 @@ function markTwoFaDetected() {
   emitStatus({ phase: '2fa-required', hint: TWO_FA_HINT })
 }
 
-function containerHasStarted(info) {
-  const startedAt = info?.State?.StartedAt
-  return Boolean(startedAt) && !String(startedAt).startsWith('0001-01-01')
-}
-
 export function getLoginStatus() {
   if (!active) return { inProgress: false }
   return {
@@ -301,10 +83,14 @@ export function getLoginStatus() {
   }
 }
 
-export async function isDockerReachable() {
+export async function isWrapperReachable() {
   try {
-    await docker.ping()
-    return true
+    const res = await fetch(`${getSupervisorUrl()}/health`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    if (!res.ok) return false
+    const data = await res.json()
+    return Boolean(data.ok)
   } catch {
     return false
   }
@@ -350,7 +136,7 @@ export function startWrapperLogin({ email, password }) {
     promise: null,
     resolve: null,
     reject: null,
-    container: null,
+    abortController: new AbortController(),
     terminated: false,
   }
 
@@ -370,188 +156,127 @@ export function startWrapperLogin({ email, password }) {
 }
 
 async function runLoginFlow() {
+  const current = active
   emitStatus({ phase: 'preparing' })
   emitStatus({ phase: 'checking-network' })
   const reachable = await checkAppleReachability()
   if (!reachable) {
-    await finalizeFailure(REACHABILITY_ERROR)
+    await finalizeFailure(REACHABILITY_ERROR, current)
     return
   }
-  await safeRemoveContainer(TEMP_CONTAINER)
-  const spec = await captureWrapperSpec()
-  active.wrapperSpec = spec
-  const bind = await resolveWrapperBind(spec)
-  const network = resolveWrapperNetwork(spec)
-  await safeRemoveContainer(WRAPPER_CONTAINER)
-  await clearStale2faFile()
 
-  const loginArg = `${active.email}:${active.password}`
-
-  emitStatus({ phase: 'creating' })
-  const container = await docker.createContainer(
-    wrapperContainerCreateOpts({
-      name: TEMP_CONTAINER,
-      cmd: ['-L', loginArg, '-F', '-H', '0.0.0.0'],
-      network,
-      bind,
-    }),
-  )
-  active.container = container
-
-  const logStream = await container.attach({
-    stream: true,
-    stdout: true,
-    stderr: true,
-  })
-  logStream.on('data', (chunk) => {
-    if (!active) return
-    const text = parseAttachChunk(chunk)
-    if (!text) return
-    const redacted = redactWrapperOutput(text, active.email, active.password)
-    active.collected += redacted
-    emitEvent('wrapper.login.log', { line: redacted.trim().slice(0, 500) })
-    checkCollected()
-  })
-  logStream.on('end', () => maybeCompleteByLogs())
-  logStream.on('close', () => maybeCompleteByLogs())
-
-  container
-    .wait({ condition: 'next-exit' })
-    .catch(() => container.wait())
-    .then((result) => handleContainerExit(result))
-    .catch((err) => {
-      if (active && !active.terminated) {
-        finalizeFailure(err.message || String(err))
-      }
-    })
-
-  await container.start()
   emitStatus({ phase: 'signing-in' })
 
-  if (!active.twoFaDetected) {
-    active.overallTimeout = setTimeout(() => {
-      if (active && !active.terminated) {
-        finalizeFailure('Sign-in timed out')
+  if (!current.twoFaDetected) {
+    current.overallTimeout = setTimeout(() => {
+      if (current && !current.terminated) {
+        finalizeFailure('Sign-in timed out', current)
       }
     }, 180_000)
   }
+
+  let res
+  try {
+    res = await fetch(`${getSupervisorUrl()}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: current.email, password: current.password }),
+      signal: current.abortController.signal,
+    })
+  } catch (err) {
+    if (current && !current.terminated) {
+      await finalizeFailure(`Cannot reach wrapper supervisor: ${err.message}`, current)
+    }
+    return
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '')
+    await finalizeFailure(errText || `Wrapper sign-in failed (HTTP ${res.status})`, current)
+    return
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+      for (const line of lines) ingestLine(current, line)
+      if (current.terminated) return
+    }
+    if (buffer) ingestLine(current, buffer)
+  } catch (err) {
+    if (!current.terminated) {
+      console.error('[wrapper-login] error reading supervisor stream:', err)
+    }
+  }
+
+  handleStreamFinished(current)
 }
 
-function checkCollected() {
-  if (!active) return
-  const s = active.collected
+function ingestLine(current, line) {
+  if (current.terminated) return
+  const redacted = redactWrapperOutput(line + '\n', current.email, current.password)
+  current.collected += redacted
+  emitEvent('wrapper.login.log', { line: redacted.trim().slice(0, 500) })
+  checkCollected(current)
+}
 
-  if (!active.twoFaDetected && logsIndicateTwoFa(s)) {
+function checkCollected(current) {
+  const s = current.collected
+
+  if (!current.twoFaDetected && logsIndicateTwoFa(s)) {
     markTwoFaDetected()
   }
 
   if (/account info cached successfully/i.test(s)) {
-    finalizeSuccess().catch((e) => finalizeFailure(e.message))
+    finalizeSuccess(current)
   }
 }
 
-function maybeCompleteByLogs() {
-  if (!active || active.terminated) return
-  handleContainerExit(null).catch(() => {})
-}
+function handleStreamFinished(current) {
+  if (current.terminated) return
 
-async function handleContainerExit(result) {
-  if (!active || active.terminated) return
-  if (/account info cached successfully/i.test(active.collected)) return
-
-  let oomKilled = false
-  let running = false
-  let started = false
-  try {
-    const info = await active.container.inspect()
-    oomKilled = Boolean(info.State?.OOMKilled)
-    running = Boolean(info.State?.Running)
-    started = containerHasStarted(info)
-  } catch {
-    /* ignore */
-  }
-
-  const statusCode = result?.StatusCode
-  if (isSpuriousWaitResult({ statusCode, running, started })) return
-
-  await delay(LOG_DRAIN_MS)
-  if (!active || active.terminated) return
-  if (/account info cached successfully/i.test(active.collected)) return
-  if (!active.twoFaDetected && logsIndicateTwoFa(active.collected)) {
-    markTwoFaDetected()
-  }
-
-  let reason = extractWrapperFailureReason(active.collected)
+  let reason = extractWrapperFailureReason(current.collected)
   if (!reason) {
-    reason =
-      formatWorkerExitReason({
-        statusCode,
-        oomKilled,
-        twoFaSubmitted: active.twoFaSubmitted,
-      }) ||
-      formatUnexpectedExitFallback({
-        statusCode,
-        oomKilled,
-        twoFaDetected: active.twoFaDetected,
-        twoFaSubmitted: active.twoFaSubmitted,
-      })
+    reason = formatUnexpectedExitFallback({
+      twoFaDetected: current.twoFaDetected,
+      twoFaSubmitted: current.twoFaSubmitted,
+    })
   } else if (/disabled|locked/i.test(reason)) {
     hardBlockReason = reason
   }
 
-  finalizeFailure(reason)
+  finalizeFailure(reason, current)
 }
 
-async function finalizeSuccess() {
-  if (!active || active.terminated) return
-  active.terminated = true
-  clearTimeout(active.overallTimeout)
-  emitStatus({ phase: 'starting-main' })
-  try {
-    try {
-      await active.container.stop({ t: 2 })
-    } catch {}
-    await safeRemoveContainer(TEMP_CONTAINER)
-    await clearStale2faFile()
-    await startMainWrapper()
-    emitStatus({ phase: 'ready' })
-    const resolve = active.resolve
-    resetActive()
-    resolve({ ok: true })
-  } catch (err) {
-    const reject = active?.reject
-    resetActive()
-    reject?.(err)
-  }
+// Aborting the /login request is what stops the sign-in worker: the
+// supervisor ties the worker's lifetime to that request.
+function finish(target) {
+  target.terminated = true
+  clearTimeout(target.overallTimeout)
+  target.abortController.abort()
+  if (active === target) resetActive()
 }
 
-async function finalizeFailure(reason) {
-  if (!active || active.terminated) return
-  active.terminated = true
-  clearTimeout(active.overallTimeout)
-  const tail = buildFailureTail(active.collected || '')
+function finalizeSuccess(target = active) {
+  if (!target || target.terminated) return
+  emitStatus({ phase: 'ready' })
+  finish(target)
+  target.resolve({ ok: true })
+}
+
+function finalizeFailure(reason, target = active) {
+  if (!target || target.terminated) return
+  const tail = buildFailureTail(target.collected || '')
   console.error(
     `[wrapper-login] failed: ${reason}\n--- wrapper output (tail, redacted) ---\n${tail.join('\n')}`,
   )
   emitStatus({ phase: 'failed', error: reason, tail })
-  try {
-    if (active.container) {
-      try {
-        await active.container.stop({ t: 2 })
-      } catch {}
-    }
-  } finally {
-    await safeRemoveContainer(TEMP_CONTAINER).catch(() => {})
-    await clearStale2faFile().catch(() => {})
-    try {
-      await startMainWrapper()
-    } catch {
-      /* ignore */
-    }
-    const reject = active.reject
-    resetActive()
-    reject?.(new Error(reason))
-  }
+  finish(target)
+  target.reject(new Error(reason))
 }
 
 export async function submit2FA(code) {
@@ -565,42 +290,29 @@ export async function submit2FA(code) {
   if (!validate2faCode(code)) {
     throw new Error('Code must be exactly 6 digits')
   }
-  if (!active.container) throw new Error('Login container not available')
-  active.twoFaSubmitted = true
-  await writeCodeIntoContainer(active.container, code.trim())
+  const current = active
+  current.twoFaSubmitted = true
+  try {
+    const res = await fetch(`${getSupervisorUrl()}/login/2fa`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.trim() }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      throw new Error(errText.trim() || `Supervisor rejected 2FA submission (HTTP ${res.status})`)
+    }
+  } catch (err) {
+    current.twoFaSubmitted = false
+    throw err
+  }
   emitStatus({ phase: 'verifying-2fa' })
   return { ok: true }
 }
 
-export async function cancelLogin() {
+export function cancelLogin() {
   if (!active) return { ok: true, noop: true }
-  await finalizeFailure('Cancelled')
+  finalizeFailure('Cancelled')
   return { ok: true }
-}
-
-async function startMainWrapper() {
-  const spec = active?.wrapperSpec || (await captureWrapperSpec())
-  const bind = await resolveWrapperBind(spec)
-  const network = resolveWrapperNetwork(spec)
-  const labels = spec.labels || { 'com.docker.compose.service': 'wrapper' }
-  await safeRemoveContainer(WRAPPER_CONTAINER)
-  const container = await docker.createContainer(
-    wrapperContainerCreateOpts({
-      name: WRAPPER_CONTAINER,
-      cmd: ['-H', '0.0.0.0'],
-      network,
-      bind,
-      labels,
-      restartPolicy: { Name: 'on-failure', MaximumRetryCount: 3 },
-    }),
-  )
-  await container.start()
-}
-
-export function wrapperDataMountExists() {
-  try {
-    return fs.statSync(WRAPPER_DATA_IN_WEB).isDirectory()
-  } catch {
-    return false
-  }
 }

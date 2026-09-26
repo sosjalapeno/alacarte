@@ -80,7 +80,7 @@ ALACarte ships with a built-in single-password gate. The first time you visit th
 A few things to keep in mind:
 
 - **Don't expose this directly to the public internet.** Several cloud providers ship hosts with permissive default firewalls. Verify your firewall, and put a reverse proxy / VPN / mesh network in front of the UI before opening it up to anything beyond your LAN.
-- **`/var/run/docker.sock` is mounted into the web container** so it can spawn the wrapper container during first-time Apple login. That effectively grants the web container root on the host — another reason not to expose it directly.
+- **No Docker socket is mounted.** First-time Apple login goes through a small supervisor inside the wrapper container (port 40020, internal network only), so the web container has no control over the host's container engine.
 - **Tighten the bind to localhost only:** set `WEB_BIND=127.0.0.1` in `.env` if you front the app with a reverse proxy on the same machine and don't want the UI reachable on your LAN.
 - **Already running your own auth?** Set `AUTH_DISABLED=true` in `.env` to skip the built-in password gate (e.g. when fronting with Authelia, Cloudflare Access, Tailscale, etc).
 - **Rate limiting and lockouts are built in** for setup/login/password-change routes (429 + Retry-After + temporary lockouts).
@@ -144,7 +144,7 @@ Wrapper response type 4 is a generic StoreServices failure, not a credential dia
 | Problem | Likely cause | Fix |
 |---------|--------------|-----|
 | "Sign in required" health warning | Wrapper isn't authenticated | Go to Settings and complete the login flow |
-| "Docker socket not available" | First-time login needs host access | For initial setup, run the container with `-v /var/run/docker.sock:/var/run/docker.sock` or see the login instructions in Settings |
+| "Wrapper supervisor not reachable" | Wrapper container down or still starting | Verify the wrapper container is healthy via `docker compose ps` and `docker compose logs wrapper` |
 | Downloads stuck at 0% | Apple token expired or wrapper down | Wait a moment; it will auto-retry. If still stuck, restart the stack |
 | Tracks show "failed" | Temporary Apple/server hiccup | Re-queue the album; transient failures usually clear |
 | FLAC files are truncated | MP4Box runtime issue | Rebuild the container image and redeploy |

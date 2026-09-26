@@ -16,8 +16,9 @@ services:
       - /dev/urandom:/app/rootfs/dev/urandom
       - /dev/random:/app/rootfs/dev/random
       - /dev/zero:/app/rootfs/dev/zero
-    # Copy the container runtime's DNS config into the Android chroot before
-    # handing argv straight to the wrapper binary.
+    # Copy the container runtime's DNS config into the Android chroot, then run
+    # the supervisor, which passes argv to the wrapper and serves the sign-in
+    # control API on 40020 (internal network only).
     entrypoint: ["/app/wrapper-entrypoint.sh"]
     command: ["-H", "0.0.0.0"]
     environment:
@@ -26,10 +27,11 @@ services:
       - "10020"
       - "20020"
       - "30020"
+      - "40020"
     networks:
       - alacarte-net
-    # on-failure (not unless-stopped) so clean exit due to missing creds doesn't
-    # loop forever — the web container surfaces an "enter Apple creds" banner.
+    # The supervisor restarts the wrapper itself; this only covers the
+    # supervisor crashing.
     restart: on-failure
 
   web:
@@ -47,6 +49,7 @@ services:
       - AMDL_WRAPPER_DECRYPT_PORT=10020
       - AMDL_WRAPPER_M3U8_PORT=20020
       - AMDL_WRAPPER_ACCOUNT_PORT=30020
+      - AMDL_WRAPPER_SUPERVISOR_PORT=40020
       - AMDL_MUSIC_PATH=/music
       - AMDL_CONFIG_DIR=/config
       - AMDL_SECRET_KEY=${AMDL_SECRET_KEY:-}
@@ -55,13 +58,6 @@ services:
     volumes:
       - ./data/web:/config
       - ${MUSIC_PATH:?Set MUSIC_PATH in .env}:/music
-      # Shared with the wrapper container so the web UI can drop a 2fa.txt file
-      # when the Apple ID requires a 2FA code (wrapper polls this path).
-      - ./data/wrapper:/wrapper-data
-      # Required so the web UI can run first-time Apple ID login for the
-      # wrapper container automatically. Treat this as root-on-host access;
-      # only expose the web UI on trusted networks.
-      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     # Default (WEB_BIND unset/empty) publishes on all interfaces — same as
     # docker's default. Set WEB_BIND=127.0.0.1 in .env to restrict the UI to
     # the host machine only when fronting with a reverse proxy.
