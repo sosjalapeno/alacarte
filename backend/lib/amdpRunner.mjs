@@ -50,6 +50,9 @@ export async function writeAmdpConfig({
     'aac-save-folder': stagingRoot,
     'mv-save-folder': stagingRoot,
     'max-memory-limit': 256,
+    // Without this amdp waits for Enter after a failed pass; with stdin closed
+    // that returns immediately and it re-runs the whole pass forever (#19).
+    'exit-on-error': true,
     'decrypt-m3u8-port': `${WRAPPER_HOST}:${WRAPPER_DECRYPT_PORT}`,
     'get-m3u8-port': `${WRAPPER_HOST}:${WRAPPER_M3U8_PORT}`,
     'get-m3u8-from-device': true,
@@ -148,7 +151,7 @@ export function spawnAmdp({ args, cwd, onLine, signal }) {
   return { child, waitExit }
 }
 
-function stripAnsi(s) {
+export function stripAnsi(s) {
   return s.replace(
     // eslint-disable-next-line no-control-regex
     /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-ntqry=><]/g,

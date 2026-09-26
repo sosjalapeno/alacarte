@@ -16,7 +16,7 @@ import {
 } from './appleApi.mjs'
 import { getLibraryPlaylistDetail } from './appleLibraryApi.mjs'
 import { triggerNavidromeScan } from './navidromeApi.mjs'
-import { writeAmdpConfig, spawnAmdp } from './amdpRunner.mjs'
+import { writeAmdpConfig, spawnAmdp, stripAnsi } from './amdpRunner.mjs'
 import { applyVariantSuffix, groupOf } from './qualityGroups.mjs'
 import {
   convertDirToFlac,
@@ -807,7 +807,7 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError }
 
 // Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
 // artist-name-independent anchor (collab albums import under a different
@@ -1023,7 +1023,8 @@ async function runJob(job) {
       })
       combined = `${downloadResult.stdout}\n${downloadResult.stderr}`
     }
-    assertAmdpResult(downloadResult, combined)
+    const partial = assertAmdpResult(downloadResult, combined)
+    const partialSuffix = failedTracksSuffix(partial?.failed, partial?.reason)
 
     progressState.downloadDone = progressState.downloadTotal
     progressState.downloadPartial = 0
@@ -1123,7 +1124,7 @@ async function runJob(job) {
       updateJob(job.id, {
         status: 'done',
         progress: 100,
-        message: `Imported ${importedTracks.length} tracks`,
+        message: `Imported ${importedTracks.length} tracks${partialSuffix}`,
         finalDir: path.dirname(playlistPath),
       })
       await appendHistory(job)
@@ -1144,6 +1145,7 @@ async function runJob(job) {
     const firstAlbum = albumDirs.find((e) => e.isDirectory())
     if (!firstAlbum) throw new Error('amdp produced no album folder')
     const albumPath = path.join(artistPath, firstAlbum.name)
+    if (partial) await removeOrphanLyrics(albumPath)
 
     if (progressState.convertEnabled) {
       applyProgress(job, progressState, {
@@ -1319,7 +1321,7 @@ async function runJob(job) {
     updateJob(job.id, {
       status: 'done',
       progress: 100,
-      message: isSong ? 'Imported track' : `Imported ${audioCount} tracks`,
+      message: isSong ? 'Imported track' : `Imported ${audioCount} tracks${partialSuffix}`,
       finalDir,
     })
     invalidateLibraryCache()
@@ -1348,6 +1350,45 @@ async function runJob(job) {
       await fsp.rm(jobStaging, { recursive: true, force: true }).catch(() => {})
     }
     state.running.delete(job.id)
+  }
+}
+
+// Downloads one track into trackStaging, retrying as FLAC when Atmos is
+// unavailable. Throws when the track could not be downloaded.
+async function downloadSingleTrack({ job, trackStaging, settings, creds, url, quality, index, progressState }) {
+  const sub = await runAmdpDownload({
+    job,
+    jobStaging: trackStaging,
+    url,
+    quality,
+    isSong: true,
+    progressState,
+  })
+  const combined = `${sub.stdout}\n${sub.stderr}`
+  if (
+    quality === 'atmos' &&
+    (await shouldFallbackAtmosToFlac(sub, combined, trackStaging))
+  ) {
+    await fsp.rm(trackStaging, { recursive: true, force: true })
+    await ensureDir(trackStaging)
+    await writeAmdpConfig({
+      settings,
+      mediaUserToken: creds.mediaUserToken,
+      stagingRoot: trackStaging,
+    })
+    progressState.downloadDone = index
+    progressState.downloadPartial = 0
+    const retry = await runAmdpDownload({
+      job,
+      jobStaging: trackStaging,
+      url,
+      quality: 'flac',
+      isSong: true,
+      progressState,
+    })
+    assertAmdpResult(retry, `${retry.stdout}\n${retry.stderr}`)
+  } else {
+    assertAmdpResult(sub, combined)
   }
 }
 
@@ -1401,39 +1442,12 @@ async function runPartialAlbumFill({
     progressState.downloadDone = i
     progressState.downloadPartial = 0
     progressState.lockDownloadTotal = true
-    const sub = await runAmdpDownload({
-      job,
-      jobStaging: trackStaging,
-      url,
-      quality,
-      isSong: true,
-      progressState,
-    })
-    const combined = `${sub.stdout}\n${sub.stderr}`
-    if (
-      quality === 'atmos' &&
-      (await shouldFallbackAtmosToFlac(sub, combined, trackStaging))
-    ) {
-      await fsp.rm(trackStaging, { recursive: true, force: true })
-      await ensureDir(trackStaging)
-      await writeAmdpConfig({
-        settings,
-        mediaUserToken: creds.mediaUserToken,
-        stagingRoot: trackStaging,
-      })
-      progressState.downloadDone = i
-      progressState.downloadPartial = 0
-      const retry = await runAmdpDownload({
-        job,
-        jobStaging: trackStaging,
-        url,
-        quality: 'flac',
-        isSong: true,
-        progressState,
-      })
-      assertAmdpResult(retry, `${retry.stdout}\n${retry.stderr}`)
-    } else {
-      assertAmdpResult(sub, combined)
+    try {
+      await downloadSingleTrack({ job, trackStaging, settings, creds, url, quality, index: i, progressState })
+    } catch (err) {
+      if (!isSkippableTrackError(job, err)) throw err
+      recordSkippedTrack(job, progressState, i, track.name || track.id, err)
+      continue
     }
 
     const artistDirs = await fsp.readdir(trackStaging, { withFileTypes: true })
@@ -1462,7 +1476,7 @@ async function runPartialAlbumFill({
   }
 
   if (!firstArtistName || !firstAlbumName) {
-    throw new Error('partial album fill produced no artist/album folder')
+    throw new Error(job.lastTrackError || 'partial album fill produced no artist/album folder')
   }
 
   if (progressState.convertEnabled) {
@@ -1551,7 +1565,7 @@ async function runPartialAlbumFill({
   updateJob(job.id, {
     status: 'done',
     progress: 100,
-    message: `Filled ${missing.length} missing track${missing.length === 1 ? '' : 's'}`,
+    message: `Filled ${trackAlbumPaths.length} missing track${trackAlbumPaths.length === 1 ? '' : 's'}${failedTracksSuffix(job.stats.failedTracks, job.lastTrackError)}`,
     finalDir,
   })
   invalidateLibraryCache()
@@ -1632,39 +1646,12 @@ async function runLibraryPlaylistFill({
     const url = `https://music.apple.com/${encodeURIComponent(job.storefront)}/album/_/${encodeURIComponent(albumCatalogId)}?i=${encodeURIComponent(track.catalogId)}`
     progressState.downloadDone = i
     progressState.downloadPartial = 0
-    const sub = await runAmdpDownload({
-      job,
-      jobStaging: trackStaging,
-      url,
-      quality,
-      isSong: true,
-      progressState,
-    })
-    const combined = `${sub.stdout}\n${sub.stderr}`
-    if (
-      quality === 'atmos' &&
-      (await shouldFallbackAtmosToFlac(sub, combined, trackStaging))
-    ) {
-      await fsp.rm(trackStaging, { recursive: true, force: true })
-      await ensureDir(trackStaging)
-      await writeAmdpConfig({
-        settings,
-        mediaUserToken: creds.mediaUserToken,
-        stagingRoot: trackStaging,
-      })
-      progressState.downloadDone = i
-      progressState.downloadPartial = 0
-      const retry = await runAmdpDownload({
-        job,
-        jobStaging: trackStaging,
-        url,
-        quality: 'flac',
-        isSong: true,
-        progressState,
-      })
-      assertAmdpResult(retry, `${retry.stdout}\n${retry.stderr}`)
-    } else {
-      assertAmdpResult(sub, combined)
+    try {
+      await downloadSingleTrack({ job, trackStaging, settings, creds, url, quality, index: i, progressState })
+    } catch (err) {
+      if (!isSkippableTrackError(job, err)) throw err
+      recordSkippedTrack(job, progressState, i, track.name || track.catalogId, err)
+      continue
     }
 
     if (progressState.convertEnabled) {
@@ -1700,7 +1687,7 @@ async function runLibraryPlaylistFill({
   }
 
   if (importedPaths.length === 0) {
-    throw new Error('no tracks were imported from playlist')
+    throw new Error(job.lastTrackError || 'no tracks were imported from playlist')
   }
 
   progressState.finalizeProgress = Math.max(progressState.finalizeProgress, 0.93)
@@ -1726,7 +1713,7 @@ async function runLibraryPlaylistFill({
   updateJob(job.id, {
     status: 'done',
     progress: 100,
-    message: `Imported ${importedPaths.length} track${importedPaths.length === 1 ? '' : 's'}`,
+    message: `Imported ${importedPaths.length} track${importedPaths.length === 1 ? '' : 's'}${failedTracksSuffix(job.stats.failedTracks, job.lastTrackError)}`,
     finalDir: path.dirname(playlistPath),
   })
   invalidateLibraryCache()
@@ -2047,11 +2034,22 @@ async function runAmdpDownload({ job, jobStaging, url, quality, isSong, progress
   }
 }
 
+// Returns null on a clean run, or { failed, reason } when amdp finished its
+// pass with some tracks downloaded and others failed (exit-on-error).
 function assertAmdpResult(result, combined) {
+  let partial = null
   if (result.code !== 0) {
-    throw new Error(
-      `amdp exited ${result.code}: ${result.stderr.slice(-400).trim() || 'no stderr'}`,
-    )
+    const summary = parseAmdpSummary(combined)
+    const reason = amdpFailureLine(combined)
+    if (!summary || summary.completed === 0 || summary.errors === 0) {
+      const detail =
+        reason ||
+        (summary?.errors ? `${summary.errors} of ${summary.total} track(s) failed to download` : null) ||
+        result.stderr.slice(-400).trim() ||
+        'no stderr'
+      throw new Error(`amdp exited ${result.code}: ${detail}`)
+    }
+    partial = { failed: summary.errors, reason }
   }
 
   if (/load Config failed/i.test(combined)) {
@@ -2066,6 +2064,49 @@ function assertAmdpResult(result, combined) {
   if (remuxError) {
     throw new Error(remuxError)
   }
+  return partial
+}
+
+// amdp ends every pass with "Completed: 2/3 | Warnings: 0 | Errors: 1".
+function parseAmdpSummary(output) {
+  const matches = [
+    ...String(output || '').matchAll(/Completed:\s*(\d+)\s*\/\s*(\d+).*?Errors:\s*(\d+)/g),
+  ]
+  const m = matches.at(-1)
+  return m ? { completed: Number(m[1]), total: Number(m[2]), errors: Number(m[3]) } : null
+}
+
+function amdpFailureLine(output) {
+  const lines = String(output || '')
+    .split(/\r?\n|\r/)
+    .map((l) => stripAnsi(l).trim())
+  for (let i = lines.length - 1; i >= 0; i--) {
+    // amdp logs this harmless line on every run
+    if (/decrypt secret: secret key not initialized/i.test(lines[i])) continue
+    if (/^(Failed to|Error:|Error while)/i.test(lines[i])) return lines[i].slice(0, 260)
+  }
+  return null
+}
+
+function failedTracksSuffix(count, reason) {
+  if (!count) return ''
+  const detail = reason && !/track\(s\) failed to download$/.test(reason) ? ` (${reason})` : ''
+  return ` · ${count} failed${detail}`
+}
+
+// Per-track loops skip a track whose download failed instead of failing the
+// whole job; cancellation and a stalled wrapper still abort the job.
+function isSkippableTrackError(job, err) {
+  return !job.cancelled && err?.name !== 'AbortError' && err?.code !== 'WRAPPER_STALL'
+}
+
+function recordSkippedTrack(job, progressState, index, label, err) {
+  job.stats.failedTracks = (job.stats.failedTracks || 0) + 1
+  job.lastTrackError = err.message
+  console.error(`[job ${job.id}] skipping ${label}: ${err.message}`)
+  progressState.downloadDone = index + 1
+  progressState.downloadPartial = 0
+  applyProgress(job, progressState, { message: `Skipped ${label} (${err.message.slice(0, 160)})` })
 }
 
 async function shouldFallbackAtmosToFlac(result, combined, jobStaging) {
@@ -2240,6 +2281,19 @@ function cleanTag(value) {
   if (typeof value !== 'string') return null
   const s = value.trim()
   return s ? s : null
+}
+
+// amdp saves lyrics before decrypting, so a failed track leaves its .lrc behind.
+async function removeOrphanLyrics(dir) {
+  const files = await fsp.readdir(dir).catch(() => [])
+  const audioStems = new Set(
+    files.filter((f) => /\.(flac|m4a|mp3)$/i.test(f)).map((f) => path.parse(f).name),
+  )
+  for (const f of files) {
+    if (/\.(lrc|ttml)$/i.test(f) && !audioStems.has(path.parse(f).name)) {
+      await fsp.rm(path.join(dir, f), { force: true })
+    }
+  }
 }
 
 async function moveLyricsSidecars(srcAudioPath, destAudioPath) {
