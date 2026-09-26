@@ -57,6 +57,15 @@ test('full scan indexes the library and writes cache rows', async () => {
     'Artist One/Great Album/01. First Song.flac',
   )
 
+  // findSongPathInLibrary resolves existing files so playlist downloads can
+  // reference them instead of downloading again
+  const { findSongPathInLibrary } = await import('../lib/libraryIndex.mjs')
+  assert.equal(
+    await findSongPathInLibrary('Artist One', 'First Song', null, index),
+    path.join(tmpMusic, 'Artist One/Great Album/01. First Song.flac'),
+  )
+  assert.equal(await findSongPathInLibrary('Artist One', 'Missing Song', null, index), null)
+
   const files = getDb().prepare('SELECT COUNT(*) AS n FROM library_files').get()
   assert.equal(files.n, 3)
   const dirs = getDb().prepare('SELECT COUNT(*) AS n FROM library_dirs').get()

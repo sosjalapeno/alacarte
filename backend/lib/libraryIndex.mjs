@@ -82,6 +82,7 @@ function emptyIndex() {
     isrcs: new Set(),
     upcs: new Set(),
     songPaths: new Map(),
+    isrcPaths: new Map(),
     songVersionPaths: new Map(),
     albumVersionGroups: new Map(),
   }
@@ -439,7 +440,10 @@ function aggregateAudioDirFromRows(rawRows, kind, artistName, dirPath, dirAddedA
         versions.push({ rel, group: versionGroup || 'primary' })
       }
     }
-    if (row.isrc) acc.isrcs.add(row.isrc)
+    if (row.isrc) {
+      acc.isrcs.add(row.isrc)
+      if (!acc.isrcPaths.has(row.isrc)) acc.isrcPaths.set(row.isrc, toRel(row.path))
+    }
     if (row.upc) acc.upcs.add(row.upc)
   }
 }
@@ -749,6 +753,19 @@ export async function hasSongInLibrary(artistName, songName, preScannedIndex = n
   const key = makeSongKey(artistName, songName)
   if (!key) return false
   return index.songKeys.has(key)
+}
+
+// Absolute path of an existing library file for this song (ISRC first, then
+// artist/title key), or null when the song is not on disk.
+export async function findSongPathInLibrary(artistName, songName, isrc = null, preScannedIndex = null) {
+  const index = preScannedIndex || (await getCachedIndex())
+  const isrcNorm = normalizeIsrc(isrc)
+  let rel = isrcNorm ? index.isrcPaths?.get(isrcNorm) : null
+  if (!rel) {
+    const key = makeSongKey(artistName, songName)
+    rel = key ? index.songPaths.get(key) : null
+  }
+  return rel ? path.join(getMusicRoot(), rel) : null
 }
 
 export async function getAlbumVersionGroups(artistName, albumName, upc = null, preScannedIndex = null) {

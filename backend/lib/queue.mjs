@@ -32,7 +32,7 @@ import {
   sanitizeSegment,
   writeVersionMarker,
 } from './folderLayout.mjs'
-import { getAlbumTrackPresence, getAlbumVersionGroups, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, songNameFromFilename, stripTrailingYear } from './libraryIndex.mjs'
+import { findSongPathInLibrary, getAlbumTrackPresence, getAlbumVersionGroups, hasSongInLibrary, invalidateLibraryCache, isPlaylistInLibrary, songNameFromFilename, stripTrailingYear } from './libraryIndex.mjs'
 import { writePlaylistM3U } from './playlistExport.mjs'
 import { getDb } from './db.mjs'
 import { normalizeForMatchKey } from './libraryMatchKey.mjs'
@@ -1633,6 +1633,22 @@ async function runLibraryPlaylistFill({
       if (albumRel) albumCatalogId = String(albumRel)
     } catch (err) {
       console.error('library playlist song lookup failed', track.catalogId, err.message)
+    }
+    // Tracks already in the library (e.g. from an earlier album download)
+    // are referenced in the m3u8 instead of being downloaded again.
+    const existingPath = await findSongPathInLibrary(
+      track.artistName,
+      track.name,
+      fillTrackIsrc,
+    )
+    if (existingPath) {
+      importedPaths.push(existingPath)
+      progressState.downloadDone = i + 1
+      job.stats.done = i + 1
+      applyProgress(job, progressState, {
+        message: `Already in library: ${track.name || track.catalogId}`,
+      })
+      continue
     }
     if (!albumCatalogId) {
       job.stats.failed = (job.stats.failed || 0) + 1
