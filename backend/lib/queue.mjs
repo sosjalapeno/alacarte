@@ -184,6 +184,40 @@ export function getJob(id) {
   return state.jobs.get(id) || null
 }
 
+// amdp's progress bars produce hundreds of updates per second; the UI only
+// needs the latest state a few times a second.
+const JOB_UPDATE_MIN_INTERVAL_MS = 250
+const PROGRESS_LOG_MIN_INTERVAL_MS = 500
+const lastJobEmitAt = new Map()
+const pendingJobEmit = new Map()
+const lastProgressLogAt = new Map()
+
+function emitJobUpdate(j, immediate) {
+  const pending = pendingJobEmit.get(j.id)
+  const wait = lastJobEmitAt.get(j.id) + JOB_UPDATE_MIN_INTERVAL_MS - Date.now()
+  if (immediate || !(wait > 0)) {
+    clearTimeout(pending)
+    pendingJobEmit.delete(j.id)
+    if (j.status === 'done' || j.status === 'failed') {
+      lastJobEmitAt.delete(j.id)
+      lastProgressLogAt.delete(j.id)
+    } else {
+      lastJobEmitAt.set(j.id, Date.now())
+    }
+    emitEvent('job.update', jobPublic(j))
+    return
+  }
+  if (pending) return
+  pendingJobEmit.set(
+    j.id,
+    setTimeout(() => {
+      pendingJobEmit.delete(j.id)
+      lastJobEmitAt.set(j.id, Date.now())
+      emitEvent('job.update', jobPublic(j))
+    }, wait),
+  )
+}
+
 function updateJob(id, patch) {
   const j = state.jobs.get(id)
   if (!j) return
@@ -191,7 +225,7 @@ function updateJob(id, patch) {
     patch.status !== undefined && patch.status !== j.status
   Object.assign(j, patch, { updatedAt: Date.now() })
   persistJob(j, statusChanged)
-  emitEvent('job.update', jobPublic(j))
+  emitJobUpdate(j, statusChanged)
 }
 
 const PERSIST_MIN_INTERVAL_MS = 1_000
@@ -808,7 +842,7 @@ export async function initQueue() {
   setImmediate(tickQueue)
 }
 
-export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag }
+export const __test__ = { persistJob, restorePersistedJobs, matchTrackForFile, assertAmdpResult, isSkippableTrackError, renumberFromTrackTag, emitJobUpdate, isProgressOnlyLine }
 
 // Stamp ISRC/BARCODE tags onto downloaded FLACs so presence matching has an
 // artist-name-independent anchor (collab albums import under a different
@@ -1885,7 +1919,16 @@ function handleAmdpLine(job, line, which, progressState) {
     job.stats.failed = (job.stats.failed || 0) + 1
   }
 
+  if (isProgressOnlyLine(line)) {
+    const now = Date.now()
+    if (now - (lastProgressLogAt.get(job.id) || 0) < PROGRESS_LOG_MIN_INTERVAL_MS) return
+    lastProgressLogAt.set(job.id, now)
+  }
   emitEvent('job.log', { id: job.id, line, which })
+}
+
+function isProgressOnlyLine(line) {
+  return /\d{1,3}(\.\d+)?\s*%/.test(line) && !/error|fail|forbidden/i.test(line)
 }
 
 function extractBracketTitle(line) {
