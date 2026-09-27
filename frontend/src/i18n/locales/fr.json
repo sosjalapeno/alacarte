@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "Sortie de la bibliothèque",
-    "location": "Emplacement",
+    "language": "Langue",
     "followSystemDefault": "Suivre la langue du système",
     "acceptedLanguages": "Langues acceptées pour les métadonnées musicales",
     "acceptedLanguagesHelp": "Une liste de préférence ordonnée — la première est la plus préférée. Le mode de nommage ci-dessous s'en sert pour décider quand conserver un nom dans la langue d'origine.",

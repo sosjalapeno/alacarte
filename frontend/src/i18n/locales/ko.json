@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "라이브러리 출력",
-    "location": "지역",
+    "language": "언어",
     "followSystemDefault": "시스템 설정 따르기",
     "acceptedLanguages": "음악 메타데이터 허용 언어",
     "acceptedLanguagesHelp": "우선순위 목록입니다 (맨 앞이 가장 선호됨). 아래 명명 방식이 원어 이름을 유지할지 결정하는 데 사용합니다.",

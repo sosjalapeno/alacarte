@@ -83,6 +83,14 @@ void i18n
     interpolation: { escapeValue: false },
   })
 
+// Keep <html lang> in step with the UI language, for screen readers and
+// the browser's own hyphenation and font selection.
+const syncHtmlLang = (lng?: string) => {
+  document.documentElement.lang = lng || 'en'
+}
+i18n.on('languageChanged', syncHtmlLang)
+syncHtmlLang(i18n.resolvedLanguage)
+
 // The exact localStorage key i18next-browser-languagedetector's default
 // 'localStorage' cache uses (see its lookupLocalStorage option, which
 // defaults to this name). applyUiLanguage below has to know it explicitly

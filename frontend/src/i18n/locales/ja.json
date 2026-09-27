@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "ライブラリ出力",
-    "location": "地域",
+    "language": "言語",
     "followSystemDefault": "システム設定に従う",
     "acceptedLanguages": "楽曲メタデータの許容言語",
     "acceptedLanguagesHelp": "優先順のリストです（先頭ほど優先）。下の命名モードが、元の言語名を残すかどうかの判断に使います。",

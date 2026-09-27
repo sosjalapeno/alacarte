@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "资料库输出",
-    "location": "地区",
+    "language": "语言",
     "followSystemDefault": "跟随系统设置",
     "acceptedLanguages": "音乐元数据接受语言",
     "acceptedLanguagesHelp": "按优先级排序的列表——排在最前的最优先。下方的命名方式会用它来判断何时保留原始语言名称。",

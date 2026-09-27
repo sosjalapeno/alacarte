@@ -216,7 +216,7 @@ export function SettingsPage() {
           <SettingsCard icon={<Globe className="h-4 w-4" />} title={t('settings.cardCatalog')}>
             <div className="space-y-4">
               <label className="flex flex-col gap-1.5 md:flex-row md:items-center md:gap-3">
-                <span className="text-sm text-white/70 md:w-32">{t('settings.location')}</span>
+                <span className="text-sm text-white/70 md:w-32">{t('settings.language')}</span>
                 <select
                   value={settings.uiLanguage}
                   onChange={(e) => update({ uiLanguage: e.target.value as PublicSettings['uiLanguage'] })}

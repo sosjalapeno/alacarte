@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "Salida de la biblioteca",
-    "location": "Ubicación",
+    "language": "Idioma",
     "followSystemDefault": "Seguir el idioma del sistema",
     "acceptedLanguages": "Idiomas aceptados para los metadatos de música",
     "acceptedLanguagesHelp": "Una lista ordenada de preferencia — el primero es el más preferido. El modo de nomenclatura de abajo la usa para decidir cuándo conservar un nombre en el idioma original.",

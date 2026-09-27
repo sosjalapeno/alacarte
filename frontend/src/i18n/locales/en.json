@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "Library output",
-    "location": "Location",
+    "language": "Language",
     "followSystemDefault": "Follow system default",
     "acceptedLanguages": "Accepted languages for music metadata",
     "acceptedLanguagesHelp": "An ordered preference list — first is most preferred. Used by the naming mode below to decide when to keep an original-language name.",

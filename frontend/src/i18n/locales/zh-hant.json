@@ -32,7 +32,7 @@
   },
   "settings": {
     "libraryOutput": "資料庫輸出",
-    "location": "位置",
+    "language": "語言",
     "followSystemDefault": "跟隨系統設定",
     "acceptedLanguages": "音樂元資料的接受語言",
     "acceptedLanguagesHelp": "按優先順序排列的清單——排在最前面的最優先。下方的命名模式會用它來決定何時保留原始語言名稱。",
