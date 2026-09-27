@@ -62,6 +62,17 @@ export async function getStorefront(id) {
   return apiGet(`https://amp-api.music.apple.com/v1/storefronts/${encodeURIComponent(id)}`)
 }
 
+export async function listStorefronts(language = 'en-US') {
+  const out = []
+  let url = `https://amp-api.music.apple.com/v1/storefronts?limit=200&l=${encodeURIComponent(language)}`
+  while (url) {
+    const page = await apiGet(url, { language })
+    out.push(...(page.data || []))
+    url = page.next ? new URL(page.next, 'https://amp-api.music.apple.com').href : null
+  }
+  return out
+}
+
 export async function getAlbum({ storefront, id, language = 'en-US' }) {
   const qs = new URLSearchParams({
     'omit[resource]': 'autos',

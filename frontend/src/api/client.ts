@@ -538,6 +538,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(patch),
     }),
+  storefronts: (lang: string) =>
+    http<{ storefronts: Array<{ id: string; name: string }> }>(
+      `/api/settings/storefronts?lang=${encodeURIComponent(lang)}`,
+    ),
   octoIntegrationToken: () =>
     http<{ token: string | null }>('/api/settings/octo-integration/token'),
   regenerateOctoIntegrationToken: () =>

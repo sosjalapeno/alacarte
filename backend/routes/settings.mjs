@@ -26,6 +26,7 @@ import {
   getHardBlock,
 } from '../lib/wrapperLogin.mjs'
 import { generateIntegrationToken } from '../lib/apiToken.mjs'
+import { storefrontList } from '../lib/storefrontList.mjs'
 import {
   startTagBackfill,
   getTagBackfillStatus,
@@ -76,6 +77,14 @@ settingsRouter.get('/', async (_req, res) => {
     res.json({ ...base, hardBlockReason: getHardBlock() || null })
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+settingsRouter.get('/storefronts', async (req, res) => {
+  try {
+    res.json({ storefronts: await storefrontList(req.query.lang) })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
   }
 })
 

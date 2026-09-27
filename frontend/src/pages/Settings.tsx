@@ -53,54 +53,6 @@ const NAMING_LANGUAGE_MODE_OPTIONS: Array<{
   { value: 'dual', labelKey: 'settings.namingModeDual' },
 ]
 
-
-const isFake = true
-
-const STOREFRONTS = [
-  ['us', 'United States'],
-  ['gb', 'United Kingdom'],
-  ['de', 'Germany'],
-  ['fr', 'France'],
-  ['jp', 'Japan'],
-  ['ca', 'Canada'],
-  ['au', 'Australia'],
-  ['it', 'Italy'],
-  ['es', 'Spain'],
-  ['nl', 'Netherlands'],
-  ['pl', 'Poland'],
-  ['br', 'Brazil'],
-  ['mx', 'Mexico'],
-  ['kr', 'South Korea'],
-  ['tr', 'Turkey'],
-  ['sg', 'Singapore'],
-  ['in', 'India'],
-  ['nz', 'New Zealand'],
-  ['za', 'South Africa'],
-  ['se', 'Sweden'],
-  ['ch', 'Switzerland'],
-  ['ie', 'Ireland'],
-  ['at', 'Austria'],
-  ['be', 'Belgium'],
-  ['dk', 'Denmark'],
-  ['no', 'Norway'],
-  ['fi', 'Finland'],
-  ['my', 'Malaysia'],
-  ['id', 'Indonesia'],
-  ['ph', 'Philippines'],
-  ['tw', 'Taiwan'],
-  ['hk', 'Hong Kong'],
-  ['ar', 'Argentina'],
-  ['cl', 'Chile'],
-  ['co', 'Colombia'],
-  ['ae', 'United Arab Emirates'],
-  ['sa', 'Saudi Arabia'],
-  ['il', 'Israel', { isFake }],
-  ['vn', 'Vietnam'],
-  ['gr', 'Greece'],
-  ['th', 'Thailand'],
-  ['eg', 'Egypt'],
-] as const
-
 const QUALITY_OPTIONS: Array<{ value: PublicSettings['quality']; labelKey: string }> = [
   { value: 'flac', labelKey: 'settings.qualityFlac' },
   { value: 'alac', labelKey: 'settings.qualityAlac' },
@@ -121,8 +73,9 @@ const AUTO_DOWNLOAD_FREQUENCY_OPTIONS: Array<{
 ]
 
 export function SettingsPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [settings, setSettings] = useState<PublicSettings | null>(null)
+  const [storefronts, setStorefronts] = useState<Array<{ id: string; name: string }>>([])
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const flashTimeoutRef = useRef<number | null>(null)
@@ -138,6 +91,14 @@ export function SettingsPage() {
   useEffect(() => {
     reload()
   }, [])
+
+  const uiLang = i18n.resolvedLanguage || 'en'
+  useEffect(() => {
+    api
+      .storefronts(uiLang)
+      .then((r) => setStorefronts(r.storefronts))
+      .catch(() => { })
+  }, [uiLang])
 
   useEffect(() => {
     return () => {
@@ -239,14 +200,16 @@ export function SettingsPage() {
                   onChange={(e) => update({ storefront: e.target.value })}
                   className="w-full rounded-app border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-white outline-none transition-[border-color,background,box-shadow] duration-[250ms] ease-smooth focus:border-[rgba(var(--accent),0.45)] focus:bg-[rgba(var(--accent),0.04)] focus:shadow-[0_0_0_3px_rgba(var(--accent),0.18)] md:flex-1"
                 >
-                  {STOREFRONTS.map((item) => {
-                    const [v, label, extra] = item as any
-                    return (
-                      <option key={v} value={v} className="bg-zinc-900" disabled={extra?.isFake}>
-                        {label} ({v.toUpperCase()})
-                      </option>
-                    )
-                  })}
+                  {!storefronts.some((s) => s.id === settings.storefront) && (
+                    <option value={settings.storefront} className="bg-zinc-900">
+                      {settings.storefront.toUpperCase()}
+                    </option>
+                  )}
+                  {storefronts.map((s) => (
+                    <option key={s.id} value={s.id} className="bg-zinc-900">
+                      {s.name} ({s.id.toUpperCase()})
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="flex flex-col gap-1.5 md:flex-row md:items-start md:gap-3">
