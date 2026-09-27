@@ -68,3 +68,32 @@ test('renameTrackFilesForLanguage is a no-op with no overrides', async () => {
   await renameTrackFilesForLanguage(dir, null)
   assert.deepEqual(fs.readdirSync(dir), ['01. Song.flac'])
 })
+
+test('renameTrackFilesForLanguage keeps resolved names inside the album folder', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'alacarte-lang-unsafe-'))
+  fs.writeFileSync(path.join(dir, '01. Bubbles.flac'), 'x')
+  await renameTrackFilesForLanguage(dir, [
+    { id: '1', name: 'Bubbles', trackNumber: 1, resolvedName: 'Bubbles (Part 1/2: 泡沫?)' },
+  ])
+  assert.deepEqual(fs.readdirSync(dir), ['01. Bubbles (Part 1_2_ 泡沫_).flac'])
+})
+
+test('renameTrackFilesForLanguage fits long dual-mode names in the filename limit', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'alacarte-lang-long-'))
+  fs.writeFileSync(path.join(dir, '01. Bubbles.flac'), 'x')
+  const resolvedName = `Bubbles (${'泡'.repeat(150)})`
+  await renameTrackFilesForLanguage(dir, [{ id: '1', name: 'Bubbles', trackNumber: 1, resolvedName }])
+  const [renamed] = fs.readdirSync(dir)
+  assert.ok(renamed.startsWith('01. Bubbles (泡'), renamed)
+  assert.ok(renamed.endsWith('.flac'))
+  assert.ok(Buffer.byteLength(renamed) <= 255, `${Buffer.byteLength(renamed)} bytes`)
+})
+
+test('sanitizeSegment caps names by bytes as well as characters', async () => {
+  const { sanitizeSegment } = await import('../lib/libraryMatchKey.mjs')
+  assert.equal(sanitizeSegment('Random Access Memories'), 'Random Access Memories')
+  assert.equal(sanitizeSegment('a'.repeat(250)), 'a'.repeat(200))
+  const cjk = sanitizeSegment('泡'.repeat(200))
+  assert.ok(Buffer.byteLength(cjk) <= 230)
+  assert.equal(cjk, '泡'.repeat(76))
+})

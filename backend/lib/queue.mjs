@@ -274,7 +274,8 @@ async function renameTrackFilesForLanguage(albumPath, overrides) {
     const track = matchTrackForFile(fn, overrides)
     if (!track?.resolvedName || track.resolvedName === track.name) continue
     if (!fn.includes(track.name)) continue
-    const newName = fn.split(track.name).join(track.resolvedName)
+    // resolved names come straight from Apple, so clean them like folder names
+    const newName = fn.split(track.name).join(sanitizeSegment(track.resolvedName))
     if (newName === fn) continue
     try {
       const dst = path.join(albumPath, newName)

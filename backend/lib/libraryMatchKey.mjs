@@ -32,15 +32,24 @@ const PRODUCT_TYPE_SUFFIX_RE =
 
 const YEAR_SUFFIX_RE = /\s*[([]\d{4}[)\]]\s*$/
 
+// Filesystems cap a name at 255 bytes; CJK characters take 3 each, so the
+// character cap alone is not enough. Leaves room for track numbers,
+// extensions and version suffixes.
+const MAX_SEGMENT_BYTES = 230
+
 export function sanitizeSegment(name) {
   if (!name) return '_'
-  return (
-    String(name)
-      .replace(BAD_CHARS, '_')
-      .replace(/\.+$/g, '')
-      .trim()
-      .slice(0, 200) || '_'
-  )
+  let s = String(name)
+    .replace(BAD_CHARS, '_')
+    .replace(/\.+$/g, '')
+    .trim()
+    .slice(0, 200)
+  if (Buffer.byteLength(s) > MAX_SEGMENT_BYTES) {
+    const chars = Array.from(s)
+    while (chars.length && Buffer.byteLength(chars.join('')) > MAX_SEGMENT_BYTES) chars.pop()
+    s = chars.join('').replace(/\.+$/g, '').trim()
+  }
+  return s || '_'
 }
 
 function mapQuotes(input) {

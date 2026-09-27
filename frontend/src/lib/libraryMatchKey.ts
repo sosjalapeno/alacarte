@@ -23,15 +23,24 @@ const PRODUCT_TYPE_SUFFIX_RE =
   /\s+[\u2013\u2014\-]\s+(?:Single|EP|Remix|Soundtrack)\s*$/i
 const YEAR_SUFFIX_RE = /\s*[([]\d{4}[)\]]\s*$/
 
+// Mirrors the backend: filesystems cap a name at 255 bytes, and CJK
+// characters take 3 each.
+const MAX_SEGMENT_BYTES = 230
+const utf8 = new TextEncoder()
+
 export function sanitizeSegment(name: string | null | undefined): string {
   if (!name) return '_'
-  return (
-    String(name)
-      .replace(BAD_CHARS, '_')
-      .replace(/\.+$/g, '')
-      .trim()
-      .slice(0, 200) || '_'
-  )
+  let s = String(name)
+    .replace(BAD_CHARS, '_')
+    .replace(/\.+$/g, '')
+    .trim()
+    .slice(0, 200)
+  if (utf8.encode(s).length > MAX_SEGMENT_BYTES) {
+    const chars = Array.from(s)
+    while (chars.length && utf8.encode(chars.join('')).length > MAX_SEGMENT_BYTES) chars.pop()
+    s = chars.join('').replace(/\.+$/g, '').trim()
+  }
+  return s || '_'
 }
 
 function mapQuotes(input: string): string {
