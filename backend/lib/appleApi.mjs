@@ -58,6 +58,10 @@ export async function searchCatalog({
   return apiGet(url, { language, mediaUserToken, signal })
 }
 
+export async function getStorefront(id) {
+  return apiGet(`https://amp-api.music.apple.com/v1/storefronts/${encodeURIComponent(id)}`)
+}
+
 export async function getAlbum({ storefront, id, language = 'en-US' }) {
   const qs = new URLSearchParams({
     'omit[resource]': 'autos',

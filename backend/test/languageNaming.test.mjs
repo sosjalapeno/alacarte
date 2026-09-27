@@ -11,6 +11,9 @@ process.env.AMDL_CONFIG_DIR = tmpDir
 process.env.AMDL_SECRET_KEY = crypto.randomBytes(32).toString('hex')
 
 const { __test__ } = await import('../lib/queue.mjs')
+const { __setStorefrontLookupForTests } = await import('../lib/originalMetadataCache.mjs')
+// no Apple requests from tests: storefronts resolve to no known home language
+__setStorefrontLookupForTests(async () => null)
 const { resolveAlbumNaming, renameTrackFilesForLanguage } = __test__
 
 test('resolveAlbumNaming: display mode is a pure no-op fast path (no Apple API call, no storefront needed)', async () => {
@@ -36,7 +39,7 @@ test('resolveAlbumNaming: unmapped storefront falls back to display-only naming'
   const meta = { name: 'Something', artistName: 'Artist', tracks: [] }
   const result = await resolveAlbumNaming({
     settings: { namingLanguageMode: 'dual', acceptedLanguages: [] },
-    storefront: 'zz', // not in STOREFRONT_HOME_LANGUAGE
+    storefront: 'zz', // Apple knows no home language for it
     albumId: '123',
     meta,
   })

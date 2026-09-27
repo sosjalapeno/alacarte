@@ -1,5 +1,4 @@
-import { getAlbum, getPlaylist, normalizeAlbum, normalizePlaylist } from './appleApi.mjs'
-import { homeLanguageForStorefront } from './metadataLanguage.mjs'
+import { getAlbum, getPlaylist, getStorefront, normalizeAlbum, normalizePlaylist } from './appleApi.mjs'
 
 // Original-language name lookups cost a second Apple catalog request per
 // album/playlist. Apple's anonymous catalog API has a tight, easily-tripped
@@ -38,6 +37,29 @@ function paced(fn) {
   return scheduled
 }
 
+// Apple's own default language for a storefront (e.g. 'ja' for jp,
+// 'de-CH' for ch), i.e. what its catalog shows locally. Looked up once per
+// storefront; a failed lookup is not cached so it is retried later.
+const homeLanguages = new Map()
+let lookupStorefront = async (id) =>
+  (await getStorefront(id))?.data?.[0]?.attributes?.defaultLanguageTag || null
+
+export function storefrontHomeLanguage(storefront) {
+  const sf = String(storefront || '').trim().toLowerCase()
+  if (!sf) return Promise.resolve(null)
+  if (!homeLanguages.has(sf)) {
+    homeLanguages.set(
+      sf,
+      lookupStorefront(sf).catch((err) => {
+        console.error(`storefront ${sf} language lookup failed:`, err.message)
+        homeLanguages.delete(sf)
+        return null
+      }),
+    )
+  }
+  return homeLanguages.get(sf)
+}
+
 function cacheKey(kind, storefront, language, id) {
   return `${kind}|${storefront}|${language}|${id}`
 }
@@ -68,7 +90,7 @@ async function cached(key, fetcher) {
  * storefront has no known home language or the lookup failed.
  */
 export async function getOriginalAlbumMeta({ storefront, albumId }) {
-  const language = homeLanguageForStorefront(storefront)
+  const language = await storefrontHomeLanguage(storefront)
   if (!language || !albumId) return null
   const key = cacheKey('album', storefront, language, albumId)
   return cached(key, async () => {
@@ -79,7 +101,7 @@ export async function getOriginalAlbumMeta({ storefront, albumId }) {
 
 /** Original-language playlist metadata (name, curatorName). */
 export async function getOriginalPlaylistMeta({ storefront, playlistId }) {
-  const language = homeLanguageForStorefront(storefront)
+  const language = await storefrontHomeLanguage(storefront)
   if (!language || !playlistId) return null
   const key = cacheKey('playlist', storefront, language, playlistId)
   return cached(key, async () => {
@@ -91,5 +113,11 @@ export async function getOriginalPlaylistMeta({ storefront, playlistId }) {
 export function __clearOriginalMetadataCacheForTests() {
   cache.clear()
   inFlight.clear()
+  homeLanguages.clear()
   chain = Promise.resolve()
+}
+
+export function __setStorefrontLookupForTests(fn) {
+  lookupStorefront = fn
+  homeLanguages.clear()
 }

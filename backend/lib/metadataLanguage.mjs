@@ -5,9 +5,8 @@
 // see README's "Language support" section for what's covered today and what
 // a follow-up pass would add.
 //
-// Chinese naming: Apple's own catalog API already uses BCP-47 script
-// subtags for Chinese — see STOREFRONT_HOME_LANGUAGE below, which has always
-// used 'zh-Hant-TW'/'zh-Hant-HK' rather than plain 'zh'. Under that scheme
+// Chinese naming: Apple's own catalog API uses BCP-47 script subtags for
+// Chinese ('zh-Hans-CN', 'zh-Hant-TW', 'zh-Hant-HK') rather than plain 'zh'. Under that scheme
 // the original 'zh' code here is really "zh-Hans" (Simplified). We keep the
 // bare 'zh' code as-is rather than renaming it to 'zh-Hans', so existing
 // installs with `acceptedLanguages`/`uiLanguage` already set to 'zh' (and
@@ -42,43 +41,6 @@ export const NAMING_LANGUAGE_MODE_VALUES = new Set([
 
 export const DEFAULT_NAMING_LANGUAGE_MODE = 'display'
 export const MAX_ACCEPTED_LANGUAGES = 10
-
-// The Apple catalog language tag Apple Music itself would show "at home" for
-// a storefront — used as a stand-in for "the original-language name" when we
-// fetch a second, home-locale copy of an album/song/playlist. A small,
-// curated map covering the storefronts already offered in Settings; a
-// storefront left out simply skips original-language lookups and naming
-// falls back to display-language behavior (today's behavior, unchanged).
-export const STOREFRONT_HOME_LANGUAGE = {
-  us: 'en-US',
-  gb: 'en-GB',
-  ca: 'en-US',
-  au: 'en-US',
-  ie: 'en-GB',
-  nz: 'en-US',
-  sg: 'en-US',
-  in: 'en-US',
-  za: 'en-US',
-  jp: 'ja-JP',
-  kr: 'ko-KR',
-  tw: 'zh-Hant-TW',
-  hk: 'zh-Hant-HK',
-  fr: 'fr-FR',
-  be: 'fr-FR',
-  ch: 'fr-FR',
-  es: 'es-ES',
-  mx: 'es-MX',
-  ar: 'es-ES',
-  cl: 'es-ES',
-  co: 'es-ES',
-  de: 'de-DE',
-  at: 'de-DE',
-  it: 'it-IT',
-}
-
-export function homeLanguageForStorefront(storefront) {
-  return STOREFRONT_HOME_LANGUAGE[String(storefront || '').toLowerCase()] || null
-}
 
 // Cheap, dependency-free script sniff — enough to tell CJK/Hangul originals
 // apart from everything else, which covers the stated use case (Chinese

@@ -72,8 +72,8 @@ void i18n
       // would reduce every zh-* browser locale — including zh-TW/zh-HK/zh-Hant-* —
       // down to the bare 'zh', so Traditional-Chinese browsers would silently
       // auto-detect into the Simplified translation. Bucket by script/region
-      // first, using the same Hant-vs-bare split as metadataLanguage.mjs's
-      // STOREFRONT_HOME_LANGUAGE convention, before i18next's own matching runs.
+      // first, following Apple's zh-Hant-TW / zh-Hant-HK convention, before
+      // i18next's own matching runs.
       convertDetectedLanguage: (lng: string) => {
         const lower = lng.toLowerCase()
         if (!lower.startsWith('zh')) return lng
