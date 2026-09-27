@@ -1,8 +1,5 @@
 # alacarte
 
-> [!TIP]
-> **Looking for Docker hosting & pre-built images?** See [**`README.fork.md`**](./README.fork.md) for Docker Compose, standalone Docker CLI instructions, and details on this fork's rootless/unprivileged setup (no `/var/run/docker.sock` required).
-
 Self-hosted Apple Music downloader with a polished web UI.
 
 <div align="center">

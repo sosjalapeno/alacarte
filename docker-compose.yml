@@ -1,9 +1,11 @@
 services:
   wrapper:
-    image: ghcr.io/hereisderek/alacarte-wrapper:latest
     build:
       context: ./wrapper
       dockerfile: Dockerfile
+    image: alacarte-wrapper:local
+    # Built from source, never on a registry: skip pulls (Portainer's re-pull
+    # option) and rebuild on every deploy so updates are picked up.
     pull_policy: build
     container_name: alacarte-wrapper
     # Wrapper binary + upstream rootfs are amd64-only. Pinning the platform makes
@@ -23,6 +25,7 @@ services:
     # the supervisor, which passes argv to the wrapper and serves the sign-in
     # control API on 40020 (internal network only).
     entrypoint: ["/app/wrapper-entrypoint.sh"]
+    command: ["-H", "0.0.0.0"]
     environment:
       - LD_PRELOAD=/app/libwrapper_login_fix.so
     expose:
@@ -37,7 +40,6 @@ services:
     restart: on-failure
 
   web:
-    image: ghcr.io/hereisderek/alacarte-web:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
