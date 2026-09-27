@@ -121,48 +121,15 @@ Wrapper response type 4 is a generic StoreServices failure, not a credential dia
 
 ## Language support
 
-ALACarte separates two independent language preferences:
+- **Language** (Settings → Catalog) sets the language of the UI: English, Chinese (Simplified or Traditional), Japanese, Korean, Spanish or French. "Follow system default" uses your browser's language and falls back to English.
+- **Naming language** (Settings → Library output) decides which language song, album and artist names are saved in:
+  - **Display** (default): the names shown in your catalog language, exactly as before.
+  - **Original if accepted**: the original-language name when its language is in your accepted list, e.g. `泡沫` instead of `Bubbles`.
+  - **Dual**: both, e.g. `Bubbles (泡沫)`.
 
-1. **Location** — the very first control in **Settings → Catalog** — translates the app's own UI (every page: Home, Search, Downloads/Queue, Apple Music/cloud library, Following, Status, Settings, and shared components like modals and quality pickers). Choose an explicit language, or "Follow system default" to use your browser's language, falling back to English if it isn't one of the ones below or can't be detected. Built with [react-i18next](https://react.i18next.com/) + [i18next-browser-languagedetector](https://github.com/i18next/i18next-browser-languageDetector).
-2. **Accepted languages for music metadata** and **downloaded file naming language**, in **Settings → Library output** — an ordered preference list (drag to reorder, click a suggestion to add, × to remove) plus a naming mode. These control what language song/album/artist *names* are downloaded in — independent of the UI language above.
+  When an original name differs, FLAC files also get `ORIGINAL_TITLE`, `ORIGINAL_ALBUM` and `ORIGINAL_ARTIST` tags.
 
-Currently translated/supported: **English, Chinese (Simplified), Chinese (Traditional), Japanese, Korean, Spanish, French** — the full UI is now translated, not just navigation/settings.
-
-**Simplified vs. Traditional Chinese codes:** Apple's own catalog API already uses BCP-47 script subtags for Chinese (see `STOREFRONT_HOME_LANGUAGE` in `backend/lib/metadataLanguage.mjs`, which has always used `zh-Hant-TW`/`zh-Hant-HK`). Under that scheme the original `zh` code here is really "zh-Hans" (Simplified). Rather than renaming it — which would silently break any existing install with `acceptedLanguages`/`uiLanguage` already set to `zh`, or the existing `zh.json` locale file — `zh` is kept as-is for Simplified Chinese, and `zh-hant` (lowercased, to match this app's other codes and its lowercase-normalizing settings validation) is added alongside it for Traditional Chinese. `detectScript()`'s cheap script-range check still can't tell Simplified from Traditional apart by character shape alone, so a detected Han-script original name is treated as matching either `zh` or `zh-hant` in your accepted-languages list.
-
-**A note for anyone touching `frontend/src/i18n/index.ts`:** the `zh-hant` code above is our own public-facing identifier (settings storage, `SUPPORTED_LANGUAGES`, the `<select>` value), but the i18next **resources object** registers that locale's translation bundle under the key `'zh-Hant'` (capital H), not `'zh-hant'`. This isn't a typo — i18next's internal `formatLanguageCode`/`toResolveHierarchy` always title-cases a small set of known BCP-47 script subtags (`hant`, `hans`, `latn`, `cyrl`, `cans`, `mong`, `arab`) when building its language-resolution order, so `changeLanguage('zh-hant')` looks up resources in the order `['zh-Hant', 'zh', 'en']` regardless of the casing passed in. Registering the bundle under the lowercase `'zh-hant'` key means that first lookup silently misses and falls through to the `'zh'` bundle — `i18n.language` still reads back as `'zh-hant'` (so this is easy to miss in testing), but every translated string quietly renders Simplified Chinese instead of Traditional. Confirmed by reproducing directly against the installed `i18next` package. If you ever add another language whose code contains one of those script subtags, register its resource bundle under i18next's title-cased form, not your own app-level code's casing.
-
-### Naming language modes
-
-Given a song whose original (Chinese) name is `泡沫` and whose Apple-translated name in your configured catalog `language` is `Bubbles`:
-
-| Mode | Behavior | Result |
-|------|----------|--------|
-| **Display** (default) | Use your display language, falling back to the original if Apple has no translation. | `Bubbles` |
-| **Original if accepted** | Use the original-language name if that language is in your accepted list; otherwise fall back to display. | `泡沫` if `zh` is in your accepted list, else `Bubbles` |
-| **Dual** | Use the display name, and append the original in parentheses when they differ. | `Bubbles (泡沫)` |
-
-This applies to song title, album title, and artist/singer name, everywhere those drive folder/file naming — see `backend/lib/queue.mjs`'s `resolveAlbumNaming`. The default mode never triggers this pipeline, so a fresh install behaves exactly as before this feature existed.
-
-**How "original language" is determined:** since Apple's catalog API only localizes on request, ALACarte fetches one extra copy of the album/playlist in the storefront's own home-locale language (see `STOREFRONT_HOME_LANGUAGE` in `backend/lib/metadataLanguage.mjs`) and compares it against your display-language copy. This is a heuristic, not a metadata field Apple actually provides — a storefront missing from that map, or content whose original language doesn't match its storefront, will just fall back to display naming. Which script a name is in (for deciding whether it's "accepted") is detected by a small, dependency-free character-range check (`detectScript`) that reliably tells Chinese/Japanese/Korean apart, but can't distinguish Latin-script languages (English vs. Spanish vs. French) from one another — a real language-detection library would be needed for that.
-
-**Rate limits:** the extra home-locale lookup only happens when a non-default naming mode is selected, is paced (a minimum gap between requests) and cached forever per album/playlist (an original-language name never changes) — see `backend/lib/originalMetadataCache.mjs`. It does not run at all for playlists' individual tracks or for the "fill missing tracks" flow, to avoid multiplying Apple API calls during bulk operations; those keep display-only naming for now.
-
-### Tags
-
-When a naming mode other than "Display" is active, FLAC downloads also get the original-language name(s) stamped as extra Vorbis comment fields (alongside the existing `ISRC`/`BARCODE` tags — see `backend/lib/audioTags.mjs`'s `writeAudioIdentityTags`):
-
-- `ORIGINAL_TITLE` — the track's original-language name (only set when it differs from what's embedded as the main title)
-- `ORIGINAL_ALBUM` — the album's original-language name
-- `ORIGINAL_ARTIST` — the artist's original-language name
-
-### Follow-up work
-
-- A handful more UI languages beyond the current six.
-- A real per-character Hanzi-variant table (or a language-detection library), so "original if accepted" can distinguish Simplified from Traditional Chinese by script alone, instead of treating a detected Han-script name as matching either accepted-language code.
-- A real language-detection library, so "original if accepted" can distinguish Latin-script languages from one another instead of only CJK/Hangul vs. everything else.
-- Per-track original-language naming for playlists and for "fill missing tracks" album backfills (currently display-only, to keep Apple API call volume flat for bulk flows).
-- A storefront/home-locale map covering more than the storefronts already offered in the Storefront picker.
+The "original" name is what Apple shows in your storefront's own language, so the naming modes only change anything when that differs from your catalog language (for example a Japanese storefront with English as the catalog language). Original-if-accepted recognises Chinese, Japanese and Korean names. A naming mode adds one cached Apple request per album, and playlist and "fill missing tracks" downloads keep display names.
 
 ## Notes and limits
 
