@@ -38,7 +38,11 @@ func newTestSupervisor(t *testing.T, loginOut string) (*Supervisor, *httptest.Se
 	}
 	t.Setenv("FAKE_LOGIN_OUT", loginOut)
 	t.Setenv("FAKE_PID_DIR", dir)
-	sup := NewSupervisor(bin, filepath.Join(dir, "data"), []string{"-H", "0.0.0.0"})
+	dataDir := filepath.Join(dir, "data")
+	tokenFile := filepath.Join(dataDir, "data", "com.apple.android.music", "files", "MUSIC_TOKEN")
+	_ = os.MkdirAll(filepath.Dir(tokenFile), 0755)
+	_ = os.WriteFile(tokenFile, []byte("fake-token"), 0600)
+	sup := NewSupervisor(bin, dataDir, []string{"-H", "0.0.0.0"})
 	srv := httptest.NewServer(sup.routes())
 	t.Cleanup(func() {
 		sup.Stop()
@@ -272,7 +276,11 @@ func TestLeaseLossWaitsAndWakeRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("FAKE_PID_DIR", dir)
-	sup := NewSupervisor(bin, filepath.Join(dir, "data"), []string{"-H", "0.0.0.0"})
+	dataDir := filepath.Join(dir, "data")
+	tokenFile := filepath.Join(dataDir, "data", "com.apple.android.music", "files", "MUSIC_TOKEN")
+	_ = os.MkdirAll(filepath.Dir(tokenFile), 0755)
+	_ = os.WriteFile(tokenFile, []byte("fake-token"), 0600)
+	sup := NewSupervisor(bin, dataDir, []string{"-H", "0.0.0.0"})
 	srv := httptest.NewServer(sup.routes())
 	t.Cleanup(func() {
 		sup.Stop()
@@ -362,5 +370,63 @@ func TestLoadControlTokenCreatesThenReuses(t *testing.T) {
 	second, err := loadControlToken(path)
 	if err != nil || second != first {
 		t.Fatalf("token changed on reload: %q -> %q (%v)", first, second, err)
+	}
+}
+
+func TestUnauthenticatedIdleMode(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "wrapper")
+	if err := os.WriteFile(bin, []byte(fakeWrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PID_DIR", dir)
+	dataDir := filepath.Join(dir, "data")
+	sup := NewSupervisor(bin, dataDir, []string{"-H", "0.0.0.0"})
+	srv := httptest.NewServer(sup.routes())
+	t.Cleanup(func() {
+		sup.Stop()
+		srv.Close()
+	})
+
+	// Start without credentials
+	sup.StartNormal()
+
+	// Should be idle and unauthenticated
+	h := health(t, srv)
+	if h.Mode != "idle" || h.Running {
+		t.Fatalf("expected idle/not running, got mode=%q running=%v", h.Mode, h.Running)
+	}
+	if h.Reason != "unauthenticated" {
+		t.Fatalf("expected reason unauthenticated, got %q", h.Reason)
+	}
+	if h.Authenticated {
+		t.Fatalf("expected Authenticated=false, got true")
+	}
+
+	// Fake wrapper child must NOT have been started
+	if _, err := os.Stat(filepath.Join(dir, "normal.child")); !os.IsNotExist(err) {
+		t.Fatalf("wrapper child was started despite missing credentials")
+	}
+
+	// Simulate credentials being created on disk (e.g. volume restored or sign-in)
+	tokenFile := filepath.Join(dataDir, "data", "com.apple.android.music", "files", "MUSIC_TOKEN")
+	if err := os.MkdirAll(filepath.Dir(tokenFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenFile, []byte("valid-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wake supervisor
+	res, err := http.Post(srv.URL+"/wake", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	waitForMode(t, srv, ModeNormal)
+	h = health(t, srv)
+	if !h.Running || !h.Authenticated {
+		t.Fatalf("expected running and authenticated after wake, got running=%v auth=%v", h.Running, h.Authenticated)
 	}
 }

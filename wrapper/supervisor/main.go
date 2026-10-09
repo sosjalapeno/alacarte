@@ -71,7 +71,8 @@ type Supervisor struct {
 	wake           chan struct{}
 	// Required in the X-Supervisor-Token header on the control endpoints;
 	// empty disables the check.
-	controlToken string
+	controlToken     string
+	credWatchRunning atomic.Bool
 }
 
 func NewSupervisor(wrapperBin, wrapperDataDir string, normalArgs []string) *Supervisor {
@@ -82,6 +83,46 @@ func NewSupervisor(wrapperBin, wrapperDataDir string, normalArgs []string) *Supe
 		mode:           ModeIdle,
 		wake:           make(chan struct{}, 1),
 	}
+}
+
+func (s *Supervisor) hasCredentials() bool {
+	candidates := []string{
+		filepath.Join(s.wrapperDataDir, "data", "com.apple.android.music", "files", "MUSIC_TOKEN"),
+		filepath.Join(s.wrapperDataDir, "MUSIC_TOKEN"),
+	}
+	for _, p := range candidates {
+		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Supervisor) scheduleCredentialWatch() {
+	if !s.credWatchRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.credWatchRunning.Store(false)
+		for {
+			select {
+			case <-time.After(30 * time.Second):
+			case <-s.wake:
+			}
+			s.mu.Lock()
+			stopping := s.stopping
+			idle := s.mode == ModeIdle && s.restartReason == "unauthenticated"
+			s.mu.Unlock()
+			if stopping || !idle {
+				return
+			}
+			if s.hasCredentials() {
+				log.Printf("[supervisor] credentials detected in %s; starting normal wrapper", s.wrapperDataDir)
+				s.StartNormal()
+				return
+			}
+		}
+	}()
 }
 
 func (s *Supervisor) get2faFilePath() string {
@@ -224,6 +265,15 @@ func (s *Supervisor) StartNormal() {
 		return
 	}
 
+	if !s.hasCredentials() {
+		s.mode = ModeIdle
+		s.restartReason = "unauthenticated"
+		s.restartAt = time.Time{}
+		log.Printf("[supervisor] No cached Apple Music credentials found in %s; paused in idle mode waiting for sign-in", s.wrapperDataDir)
+		s.scheduleCredentialWatch()
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	var leaseLost atomic.Bool
 	exited, err := s.run(ctx, s.normalArgs, func(line string) {
@@ -256,6 +306,16 @@ func (s *Supervisor) StartNormal() {
 		if unexpected {
 			s.normal = nil
 			s.mode = ModeIdle
+			if !s.hasCredentials() {
+				s.restartReason = "unauthenticated"
+				s.restartAt = time.Time{}
+				s.cleanExits = 0
+				log.Printf("[supervisor] wrapper exited and credentials are missing; pausing in idle mode")
+				s.mu.Unlock()
+				s.scheduleCredentialWatch()
+				close(p.done)
+				return
+			}
 			delay = s.restartDelay(err, time.Since(started), leaseLost.Load())
 			s.restartReason = exitReason(err, leaseLost.Load())
 			s.restartAt = time.Now().Add(delay)
@@ -327,10 +387,12 @@ type TwoFaRequest struct {
 }
 
 type HealthResponse struct {
-	Ok      bool   `json:"ok"`
-	Mode    string `json:"mode"`
-	Running bool   `json:"running"`
-	// Set while waiting to restart the wrapper after it exited on its own.
+	Ok            bool   `json:"ok"`
+	Mode          string `json:"mode"`
+	Running       bool   `json:"running"`
+	Authenticated bool   `json:"authenticated"`
+	// Set while waiting to restart the wrapper after it exited on its own,
+	// or "unauthenticated" when waiting for Apple credentials.
 	Reason      string `json:"reason,omitempty"`
 	RestartInMs int64  `json:"restartInMs,omitempty"`
 }
@@ -338,13 +400,16 @@ type HealthResponse struct {
 func (s *Supervisor) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	resp := HealthResponse{
-		Ok:      true,
-		Mode:    string(s.mode),
-		Running: s.normal != nil || s.mode == ModeLoggingIn,
+		Ok:            true,
+		Mode:          string(s.mode),
+		Running:       s.normal != nil || s.mode == ModeLoggingIn,
+		Authenticated: s.hasCredentials(),
 	}
-	if s.mode == ModeIdle && !s.restartAt.IsZero() {
+	if s.mode == ModeIdle {
 		resp.Reason = s.restartReason
-		resp.RestartInMs = max(0, time.Until(s.restartAt).Milliseconds())
+		if !s.restartAt.IsZero() {
+			resp.RestartInMs = max(0, time.Until(s.restartAt).Milliseconds())
+		}
 	}
 	s.mu.Unlock()
 

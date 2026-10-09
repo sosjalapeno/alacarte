@@ -24,8 +24,14 @@ const WRAPPER_PORTS = {
 const MUSIC_PATH = process.env.AMDL_MUSIC_PATH || '/music'
 const RECOVERED_SHOW_MS = 2 * 60_000
 
-function humanize(probe) {
+function humanize(probe, supervisor) {
   if (probe.ok) return probe
+  if (supervisor?.reason === 'unauthenticated') {
+    return { ...probe, error: 'wrapper has no Apple Music credentials (sign in under Settings -> Apple Account)' }
+  }
+  if (supervisor?.reason === 'lease_lost') {
+    return { ...probe, error: 'playback lease in use by another device' }
+  }
   if (probe.error === 'ENOTFOUND') {
     return { ...probe, error: 'wrapper container is not running' }
   }
@@ -77,13 +83,14 @@ healthRouter.get('/', async (_req, res) => {
       lastStallAt: events.stallSuspectedAt || null,
       lastStallAbortedAt: events.stallAbortedAt || null,
       lastDownAt: events.downAt || null,
-      decrypt: humanize(decrypt),
-      m3u8: humanize(m3u8),
-      account: humanize(account),
+      decrypt: humanize(decrypt, supervisor),
+      m3u8: humanize(m3u8, supervisor),
+      account: humanize(account, supervisor),
       supervisor: supervisor
         ? {
             mode: supervisor.mode,
             running: Boolean(supervisor.running),
+            authenticated: Boolean(supervisor.authenticated),
             reason: supervisor.reason || null,
             restartInMs: supervisor.restartInMs ?? null,
           }
