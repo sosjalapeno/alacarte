@@ -20,6 +20,7 @@ const state = {
   scanned: 0,
   total: 0,
   added: 0,
+  converted: 0, // written from an existing .ttml, no Apple call
   skipped: 0,
   noLyrics: 0,
   noMatch: 0,
@@ -44,8 +45,8 @@ const defaultDeps = {
 let lastEmitAt = 0
 
 function status() {
-  const { running, scanned, total, added, skipped, noLyrics, noMatch, failed, current, startedAt, finishedAt, stopRequested, error } = state
-  return { running, scanned, total, added, skipped, noLyrics, noMatch, failed, current, startedAt, finishedAt, stopRequested, error }
+  const { running, scanned, total, added, converted, skipped, noLyrics, noMatch, failed, current, startedAt, finishedAt, stopRequested, error } = state
+  return { running, scanned, total, added, converted, skipped, noLyrics, noMatch, failed, current, startedAt, finishedAt, stopRequested, error }
 }
 
 export function getLyricsBackfillStatus() {
@@ -120,13 +121,29 @@ async function collectAudio(dir, out) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+export function wantedFormats(setting) {
+  if (setting === 'both') return ['lrc', 'ttml']
+  return setting === 'ttml' ? ['ttml'] : ['lrc']
+}
+
+// Writes a sidecar only if there is none yet. True when it was written.
+async function writeNew(file, body) {
+  try {
+    await fsp.writeFile(file, body, { flag: 'wx' })
+    return true
+  } catch (err) {
+    if (err.code === 'EEXIST') return false
+    throw err
+  }
+}
+
 async function runBackfill(deps) {
   try {
     const settings = await deps.readSettings()
     const { mediaUserToken } = await deps.readAppleCreds()
     const storefront = settings.storefront || 'us'
     const language = settings.language || 'en-US'
-    const asTtml = settings.lyricsFormat === 'ttml'
+    const wanted = wantedFormats(settings.lyricsFormat)
 
     const files = []
     await collectAudio(MUSIC_ROOT, files)
@@ -136,9 +153,24 @@ async function runBackfill(deps) {
     const pending = []
     for (const file of files) {
       const stem = file.slice(0, -path.extname(file).length)
-      if ((await exists(`${stem}.lrc`)) || (await exists(`${stem}.ttml`))) {
+      const have = { lrc: await exists(`${stem}.lrc`), ttml: await exists(`${stem}.ttml`) }
+      let missing = wanted.filter((f) => !have[f])
+      if (missing.length === 0) {
         state.scanned += 1
         state.skipped += 1
+        continue
+      }
+      if (missing.includes('lrc') && have.ttml) {
+        // Convert what is already on disk; no Apple call needed.
+        const lrc = ttmlToLrc(await fsp.readFile(`${stem}.ttml`, 'utf8').catch(() => ''))
+        if (lrc && (await writeNew(`${stem}.lrc`, lrc))) {
+          state.converted += 1
+          missing = missing.filter((f) => f !== 'lrc')
+        }
+      }
+      if (missing.length === 0) {
+        state.scanned += 1
+        emit()
         continue
       }
       const { isrc } = await readAudioIdentityTags(file)
@@ -147,7 +179,7 @@ async function runBackfill(deps) {
         state.noMatch += 1
         continue
       }
-      pending.push({ file, stem, isrc })
+      pending.push({ file, stem, isrc, missing })
     }
     emit(true)
 
@@ -194,13 +226,13 @@ async function runBackfill(deps) {
         }
         try {
           const ttml = await deps.getSongLyricsTtml({ storefront, id: song.id, language, mediaUserToken })
-          const body = ttml && (asTtml ? ttml : ttmlToLrc(ttml))
-          if (!body) {
-            state.noLyrics += 1
-          } else {
-            await fsp.writeFile(`${item.stem}${asTtml ? '.ttml' : '.lrc'}`, body)
-            state.added += 1
+          let wrote = false
+          for (const format of item.missing) {
+            const body = ttml && (format === 'ttml' ? ttml : ttmlToLrc(ttml))
+            if (body && (await writeNew(`${item.stem}.${format}`, body))) wrote = true
           }
+          if (wrote) state.added += 1
+          else state.noLyrics += 1
         } catch (err) {
           state.failed += 1
           state.error = err.message || 'lyrics fetch failed'
@@ -215,7 +247,7 @@ async function runBackfill(deps) {
     state.running = false
     state.current = null
     state.finishedAt = deps.now()
-    if (state.added > 0) deps.triggerNavidromeScan().catch(() => {})
+    if (state.added + state.converted > 0) deps.triggerNavidromeScan().catch(() => {})
     emit(true)
   }
 }
@@ -237,6 +269,7 @@ export async function startLyricsBackfill({ deps = defaultDeps } = {}) {
     scanned: 0,
     total: 0,
     added: 0,
+    converted: 0,
     skipped: 0,
     noLyrics: 0,
     noMatch: 0,

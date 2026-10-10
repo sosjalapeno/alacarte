@@ -356,6 +356,7 @@ export function SettingsPage() {
                   >
                     <option value="lrc" className="bg-zinc-900">{t('settings.lyricsFormatLrc')}</option>
                     <option value="ttml" className="bg-zinc-900">{t('settings.lyricsFormatTtml')}</option>
+                    <option value="both" className="bg-zinc-900">{t('settings.lyricsFormatBoth')}</option>
                   </select>
 
                 </div>
@@ -1830,6 +1831,11 @@ function LyricsBackfillCard({ flash }: { flash: (msg: string) => void }) {
               ? t('settings.lastRunLyricsAdded', { count: s.added })
               : t('settings.lyricsAddedCount', { count: s.added })}
           </Badge>
+          {!!s.converted && (
+            <Badge variant="ok">
+              {t('settings.lyricsConvertedCount', { count: s.converted })}
+            </Badge>
+          )}
           <Badge>{t('settings.alreadyHaveLyricsCount', { count: s.skipped })}</Badge>
           <Badge>{t('settings.noAppleLyricsCount', { count: s.noLyrics })}</Badge>
           <Badge variant="warn">{t('settings.unmatchedCount', { count: s.noMatch })}</Badge>

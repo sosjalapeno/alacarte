@@ -823,12 +823,14 @@ export function makeSongKey(artistName, songName) {
 }
 
 async function hasSiblingLrc(audioPath) {
-  const lrcPath = path.join(
-    path.dirname(audioPath),
-    `${path.basename(audioPath, path.extname(audioPath))}.lrc`,
-  )
-  const stat = await fsp.stat(lrcPath).catch(() => null)
-  return Boolean(stat?.isFile())
+  const dir = path.dirname(audioPath)
+  const base = path.basename(audioPath, path.extname(audioPath))
+  for (const ext of ['.lrc', '.ttml']) {
+    const p = path.join(dir, `${base}${ext}`)
+    const stat = await fsp.stat(p).catch(() => null)
+    if (stat?.isFile()) return true
+  }
+  return false
 }
 
 function readDirSafe(dir) {

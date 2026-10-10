@@ -158,11 +158,15 @@ libraryRouter.delete('/song', async (req, res) => {
     }
 
     await fsp.unlink(abs)
-    const lrcPath = path.join(
-      path.dirname(abs),
-      `${path.basename(abs, path.extname(abs))}.lrc`,
-    )
-    const removedLyrics = await fsp.unlink(lrcPath).then(() => true).catch(() => false)
+    let removedLyrics = false
+    for (const ext of ['.lrc', '.ttml']) {
+      const p = path.join(
+        path.dirname(abs),
+        `${path.basename(abs, path.extname(abs))}${ext}`,
+      )
+      const removed = await fsp.unlink(p).then(() => true).catch(() => false)
+      if (removed) removedLyrics = true
+    }
 
     invalidateLibraryCache()
     emitEvent('library.changed', {

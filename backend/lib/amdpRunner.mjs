@@ -37,7 +37,7 @@ export async function writeAmdpConfig({
     'authorization-token': '',
     language: settings.language || '',
     'lrc-type': settings.lyricsType || 'lyrics',
-    'lrc-format': settings.lyricsFormat || 'lrc',
+    'lrc-format': settings.lyricsFormat === 'both' ? 'ttml' : (settings.lyricsFormat || 'lrc'),
     'embed-lrc': lyricsEnabled,
     'save-lrc-file': lyricsEnabled,
     'save-artist-cover': false,
