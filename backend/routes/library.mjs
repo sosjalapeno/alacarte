@@ -2,7 +2,12 @@ import express from 'express'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
-import { searchCatalog } from '../lib/appleApi.mjs'
+import { getAppleCooldownMs, searchCatalog } from '../lib/appleApi.mjs'
+import {
+  normalizeArtistName,
+  readStoredArtistIds,
+  storeArtistId,
+} from '../lib/artistIdCache.mjs'
 import { normalizeIsrc, normalizeUpc } from '../lib/audioTags.mjs'
 import { emitEvent } from '../lib/eventBus.mjs'
 import {
@@ -21,12 +26,10 @@ export const libraryRouter = express.Router()
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
 const AUDIO_RE = /\.(flac|m4a|mp3)$/i
-const ARTIST_RESOLVE_TTL_MS = 24 * 60 * 60 * 1000
-// A failed lookup (rate limit, network) is retried much sooner.
-const ARTIST_RESOLVE_ERROR_TTL_MS = 10 * 60 * 1000
-// Apple rate-limits by IP, so a large library resolves a few names at a time.
-const ARTIST_RESOLVE_CONCURRENCY = 4
-const artistResolveCache = new Map()
+// Artist IDs only feed deep links, so they are never fetched while a request
+// waits. Missing ones are looked up in the background, one at a time, and kept in
+// library.db so a restart or a page load costs no Apple calls.
+const ARTIST_RESOLVE_INTERVAL_MS = Math.max(0, Number(process.env.AMDL_ARTIST_RESOLVE_INTERVAL_MS ?? 4000))
 
 libraryRouter.get('/', async (_req, res) => {
   try {
@@ -34,19 +37,22 @@ libraryRouter.get('/', async (_req, res) => {
     const settings = await readSettings()
     const storefront = settings?.storefront || 'us'
     const language = settings?.language || 'en-US'
-    const artistIdsByName = await resolveArtistIdsByName(
-      index,
-      storefront,
-      language,
-    )
+    const artistIdsByName = readStoredArtistIds(storefront)
+    const unresolved = new Map()
+    for (const { artistName } of [...index.albums, ...index.singles]) {
+      const name = String(artistName || '').trim()
+      const key = normalizeArtistName(name)
+      if (key && artistIdsByName && !artistIdsByName.has(key)) unresolved.set(key, name)
+    }
+    queueArtistResolution(storefront, language, unresolved)
 
     const singles = index.singles.map((s) => ({
       ...s,
-      artistId: artistIdsByName.get(normalizeArtistName(s.artistName)) || null,
+      artistId: artistIdsByName?.get(normalizeArtistName(s.artistName)) || null,
     }))
     const albums = index.albums.map((a) => ({
       ...a,
-      artistId: artistIdsByName.get(normalizeArtistName(a.artistName)) || null,
+      artistId: artistIdsByName?.get(normalizeArtistName(a.artistName)) || null,
     }))
 
     res.json({
@@ -275,56 +281,66 @@ function resolveUnderMusicRoot(relPath) {
   return abs
 }
 
-async function resolveArtistIdsByName(index, storefront, language) {
-  const byName = new Map()
-  const names = new Set([
-    ...index.albums.map((a) => a.artistName),
-    ...index.singles.map((s) => s.artistName),
-  ])
-  const pending = [...names].map((name) => String(name || '').trim()).filter(Boolean)
-  const worker = async () => {
-    while (pending.length > 0) {
-      const name = pending.shift()
-      const key = normalizeArtistName(name)
-      if (!key) continue
-      byName.set(key, await resolveArtistId(name, storefront, language))
-    }
+const resolveQueue = new Map()
+let resolverRunning = false
+
+function queueArtistResolution(storefront, language, unresolved) {
+  for (const [key, name] of unresolved) {
+    resolveQueue.set(`${storefront}::${key}`, { storefront, language, key, name })
   }
-  await Promise.all(Array.from({ length: ARTIST_RESOLVE_CONCURRENCY }, worker))
-  return byName
+  if (!resolverRunning && resolveQueue.size > 0) void runArtistResolver()
 }
 
-async function resolveArtistId(artistName, storefront, language) {
-  const normalized = normalizeArtistName(artistName)
-  if (!normalized) return null
-  const cacheKey = `${storefront}::${normalized}`
-  const now = Date.now()
-  const cached = artistResolveCache.get(cacheKey)
-  if (cached && cached.expiresAt > now) return cached.artistId
+const pause = () =>
+  new Promise((resolve) => setTimeout(resolve, ARTIST_RESOLVE_INTERVAL_MS).unref())
 
-  let artistId = null
-  let ttlMs = ARTIST_RESOLVE_TTL_MS
-  try {
-    const raw = await searchCatalog({
-      storefront,
-      term: artistName,
-      types: 'artists',
-      limit: 10,
-      offset: 0,
-      language,
-    })
-    const candidates = raw?.results?.artists?.data || []
-    artistId = pickBestArtistId(artistName, candidates)
-  } catch {
-    artistId = null
-    ttlMs = ARTIST_RESOLVE_ERROR_TTL_MS
-  }
-
-  artistResolveCache.set(cacheKey, {
-    artistId,
-    expiresAt: now + ttlMs,
+// One paced search. Whatever name(s) Apple returns for the matched artist, in whatever
+// language, are kept as extra keys for the same ID; no extra request is made for them.
+async function lookupArtist(item) {
+  const raw = await searchCatalog({
+    storefront: item.storefront,
+    term: item.name,
+    types: 'artists',
+    limit: 10,
+    offset: 0,
+    language: item.language,
   })
-  return artistId
+  const candidates = raw?.results?.artists?.data || []
+  const artistId = pickBestArtistId(item.name, candidates)
+  const names = candidates
+    .filter((c) => artistId && String(c?.id) === artistId)
+    .map((c) => c?.attributes?.name)
+  return { artistId, names }
+}
+
+// One lookup per ARTIST_RESOLVE_INTERVAL_MS. Any Apple 429 (or an active
+// cooldown) stops the run and drops the queue; the next library load re-queues
+// whatever is still unresolved.
+async function runArtistResolver() {
+  resolverRunning = true
+  try {
+    while (resolveQueue.size > 0) {
+      if (getAppleCooldownMs() > 0) break
+      const [queueKey, item] = resolveQueue.entries().next().value
+      resolveQueue.delete(queueKey)
+      try {
+        const { artistId, names } = await lookupArtist(item)
+        storeArtistId(item.storefront, item.key, artistId)
+        // Every name Apple gave this artist (one per language tried) is a key too.
+        for (const name of names) {
+          const alias = normalizeArtistName(name)
+          if (alias && alias !== item.key) storeArtistId(item.storefront, alias, artistId)
+        }
+      } catch (err) {
+        console.warn(`[library] artist lookup for "${item.name}" failed: ${err.message}`)
+        if (/Apple API 429/.test(err.message)) break
+      }
+      await pause()
+    }
+  } finally {
+    resolveQueue.clear()
+    resolverRunning = false
+  }
 }
 
 function pickBestArtistId(targetName, candidates) {
@@ -365,15 +381,6 @@ function pickBestArtistId(targetName, candidates) {
   if (best.score < 80) return null
   if (second && best.score - second.score < 10) return null
   return best.id
-}
-
-function normalizeArtistName(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
 }
 
 function tokenizeArtistName(value) {

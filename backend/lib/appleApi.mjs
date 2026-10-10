@@ -12,7 +12,60 @@ export function appleRequestSignal(signal) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
 
+// Rolling record of every Apple catalog request, so a 429 can be traced to
+// whichever caller (importer search, scheduler, download job, UI) caused the
+// burst. Logged to stdout; the caller is the first stack frame outside this file.
+const recentCalls = []
+const RECENT_WINDOW_MS = 60_000
+
+function callerOf() {
+  const frames = String(new Error().stack || '').split('\n').slice(1)
+  const f = frames.find((l) => !l.includes('appleApi.mjs') && !l.includes('node:internal'))
+  return (f || '').trim().replace(/^at /, '').replace(/.*\/(?:app|backend)\//, '').slice(0, 90)
+}
+
+// After any 429, every Apple call fails locally for this long instead of
+// going out again: retrying against a banned IP only extends the ban.
+const COOLDOWN_MS = Math.max(0, Number(process.env.APPLE_429_COOLDOWN_MS ?? 15 * 60 * 1000))
+let cooldownUntil = 0
+export function getAppleCooldownMs() {
+  return Math.max(0, cooldownUntil - Date.now())
+}
+
+function recordCall(entry) {
+  const now = Date.now()
+  recentCalls.push({ ...entry, at: now })
+  while (recentCalls.length && now - recentCalls[0].at > RECENT_WINDOW_MS) recentCalls.shift()
+  console.log(
+    `[apple] ${entry.status} ${entry.path}${entry.query} ${entry.ms}ms via ${entry.caller}` +
+      (entry.retryAfter ? ` retry-after=${entry.retryAfter}` : ''),
+  )
+  if (entry.status === 429) {
+    cooldownUntil = Date.now() + COOLDOWN_MS
+    console.warn(`[apple] 429 -> all Apple calls blocked for ${Math.round(COOLDOWN_MS / 1000)}s`)
+    const byCaller = {}
+    for (const c of recentCalls) byCaller[c.caller] = (byCaller[c.caller] || 0) + 1
+    console.warn(
+      `[apple] 429 after ${recentCalls.length} calls in last ${RECENT_WINDOW_MS / 1000}s:`,
+      JSON.stringify(byCaller),
+    )
+  }
+}
+
 async function apiGet(url, { language = '', mediaUserToken, signal } = {}) {
+  const caller = callerOf()
+  const startedAt = Date.now()
+  const left = getAppleCooldownMs()
+  if (left > 0) {
+    console.warn(
+      `[apple] BLOCKED (429 cooldown, ${Math.ceil(left / 1000)}s left) ${new URL(url).pathname} via ${caller}`,
+    )
+    const err = new Error(
+      `Apple API 429 on ${new URL(url).pathname}: local cooldown, ${Math.ceil(left / 1000)}s left`,
+    )
+    err.retryAfterSec = Math.ceil(left / 1000)
+    throw err
+  }
   let token = await getBearerToken()
   const run = async (t) => {
     const headers = {
@@ -31,6 +84,15 @@ async function apiGet(url, { language = '', mediaUserToken, signal } = {}) {
     token = await getBearerToken()
     res = await run(token)
   }
+  const u = new URL(url)
+  recordCall({
+    status: res.status,
+    path: u.pathname,
+    query: u.search.slice(0, 80),
+    ms: Date.now() - startedAt,
+    caller,
+    retryAfter: res.headers.get('retry-after'),
+  })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new Error(

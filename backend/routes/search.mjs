@@ -11,6 +11,7 @@ import {
 } from '../lib/appleApi.mjs'
 import { parseAppleMusicUrl } from '../lib/appleMusicUrl.mjs'
 import { readSettings } from '../lib/settingsStore.mjs'
+import { rememberArtistNames } from '../lib/artistIdCache.mjs'
 import { filterAlbumsByRating } from '../lib/contentRatingFilter.mjs'
 
 export const searchRouter = express.Router()
@@ -245,6 +246,8 @@ searchRouter.get('/', async (req, res) => {
       genreNames: x.attributes?.genreNames || [],
       url: x.attributes?.url,
     }))
+
+    rememberArtistNames(storefront, artists)
 
     const resolveArtistId = (relId, artistName) => {
       if (relId) return relId
