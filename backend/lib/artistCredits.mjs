@@ -6,6 +6,7 @@ import { normalizeIsrc, normalizeUpc, readFlacComments, writeFlacComments } from
 import { readSettings } from './settingsStore.mjs'
 import { getAlbumsByUpc, getSongsByIsrc } from './appleApi.mjs'
 import { triggerNavidromeScan } from './navidromeApi.mjs'
+import { withAppleRetry } from './appleWait.mjs'
 
 const MUSIC_ROOT = process.env.AMDL_MUSIC_PATH || '/music'
 const BATCH = 25
@@ -52,13 +53,13 @@ export function creditFields(current, { artists, composers, albumArtists }) {
   return fields
 }
 
-async function lookupBatch(items, { storefront, language, deps }) {
+async function lookupBatch(items, { storefront, language, deps, retry = (fn) => fn() }) {
   const isrcs = [...new Set(items.map((i) => i.isrc).filter(Boolean))]
   const upcs = [...new Set(items.map((i) => i.upc).filter(Boolean))]
   const songs = new Map()
   const albums = new Map()
   if (isrcs.length) {
-    const json = await deps.getSongsByIsrc({ storefront, isrcs, language, include: 'artists,composers' })
+    const json = await retry(() => deps.getSongsByIsrc({ storefront, isrcs, language, include: 'artists,composers' }))
     for (const s of json?.data || []) {
       const isrc = normalizeIsrc(s.attributes?.isrc)
       if (isrc && !songs.has(isrc)) {
@@ -68,7 +69,7 @@ async function lookupBatch(items, { storefront, language, deps }) {
     await sleep(deps.delayMs)
   }
   if (upcs.length) {
-    const json = await deps.getAlbumsByUpc({ storefront, upcs, language, include: 'artists' })
+    const json = await retry(() => deps.getAlbumsByUpc({ storefront, upcs, language, include: 'artists' }))
     for (const a of json?.data || []) {
       const upc = normalizeUpc(a.attributes?.upc)
       if (upc && !albums.has(upc)) albums.set(upc, names(a.relationships?.artists))
@@ -99,7 +100,7 @@ async function collectFlacs(target, out) {
  */
 export async function creditArtists(
   targets,
-  { deps = defaultDeps, shouldStop = () => false, onFile = () => {}, albumArtists: withAlbumArtists = true } = {},
+  { deps = defaultDeps, shouldStop = () => false, onFile = () => {}, onWait = null, albumArtists: withAlbumArtists = true } = {},
 ) {
   const settings = await deps.readSettings()
   const storefront = settings.storefront || 'us'
@@ -127,7 +128,10 @@ export async function creditArtists(
     const batch = items.slice(i, i + BATCH)
     let found
     try {
-      found = await lookupBatch(batch, { storefront, language, deps })
+      // Only long-running backfills (onWait given) wait out a rate limit; the
+      // download hook stays fail-soft so a finished job is never held up.
+      const retry = onWait ? (fn) => withAppleRetry(fn, { shouldStop, onWait }) : undefined
+      found = await lookupBatch(batch, { storefront, language, deps, retry })
     } catch (err) {
       for (const item of batch) onFile({ file: item.file, result: 'failed', error: err.message })
       continue
@@ -162,6 +166,7 @@ export async function creditImportedFiles(targets) {
 
 const state = {
   running: false,
+  waitingUntil: null,
   scanned: 0,
   total: 0,
   updated: 0,
@@ -178,8 +183,8 @@ const state = {
 let lastEmitAt = 0
 
 function status() {
-  const { running, scanned, total, updated, skipped, noMatch, failed, current, startedAt, finishedAt, stopRequested, error } = state
-  return { running, scanned, total, updated, skipped, noMatch, failed, current, startedAt, finishedAt, stopRequested, error }
+  const { running, scanned, total, updated, skipped, noMatch, failed, current, startedAt, finishedAt, stopRequested, error, waitingUntil } = state
+  return { running, scanned, total, updated, skipped, noMatch, failed, current, startedAt, finishedAt, stopRequested, error, waitingUntil }
 }
 
 function emit(force = false) {
@@ -219,6 +224,7 @@ export async function startArtistBackfill({ deps = defaultDeps } = {}) {
     finishedAt: null,
     stopRequested: false,
     error: null,
+    waitingUntil: null,
   })
   emit(true)
   const counters = { updated: 'updated', unchanged: 'skipped', noMatch: 'noMatch', failed: 'failed' }
@@ -231,6 +237,10 @@ export async function startArtistBackfill({ deps = defaultDeps } = {}) {
       await creditArtists([MUSIC_ROOT], {
         deps,
         shouldStop: () => state.stopRequested,
+        onWait: (until) => {
+          state.waitingUntil = until
+          emit(true)
+        },
         onFile: ({ file, result, error }) => {
           state.scanned += 1
           state[counters[result]] += 1
@@ -243,6 +253,7 @@ export async function startArtistBackfill({ deps = defaultDeps } = {}) {
       state.error = err.message || 'artist backfill failed'
     } finally {
       state.running = false
+      state.waitingUntil = null
       state.current = null
       state.finishedAt = deps.now()
       // a full scan so Navidrome drops the combined artists it built before

@@ -1599,11 +1599,32 @@ function HintSlot({ hint }: { hint: { tone: HintTone; text: string } | null }) {
 
 type BackfillStatusBase = {
   running: boolean
+  phase?: 'idle' | 'scanning' | 'matching' | 'waiting' | 'done'
   scanned: number
   total: number
+  albumsDone?: number
+  albumsTotal?: number
+  appleCalls?: number
+  waitingUntil?: number | null
   current: string | null
   finishedAt: number | null
   stopRequested: boolean
+}
+
+// "12 min" / "40 s" for a wait that ends at `until` (epoch ms).
+function useWaitLabel(until: number | null | undefined) {
+  const { t } = useTranslation()
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!until) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [until])
+  if (!until) return null
+  const seconds = Math.max(0, Math.round((until - now) / 1000))
+  return seconds >= 90
+    ? t('settings.timeMinutes', { count: Math.round(seconds / 60) })
+    : t('settings.timeSeconds', { count: seconds })
 }
 
 function BackfillCard<S extends BackfillStatusBase>({
@@ -1676,6 +1697,7 @@ function BackfillCard<S extends BackfillStatusBase>({
   }
 
   const running = Boolean(status?.running)
+  const waitLabel = useWaitLabel(running ? status?.waitingUntil : null)
   const pct =
     status && status.total > 0
       ? Math.min(100, Math.round((status.scanned / status.total) * 100))
@@ -1695,9 +1717,27 @@ function BackfillCard<S extends BackfillStatusBase>({
         {running && (
           <div className="space-y-2">
             <ProgressBar
-              value={pct}
-              label={t('settings.backfillProgress', { pct, scanned: status!.scanned, total: status!.total })}
+              value={status!.phase === 'scanning' ? 0 : pct}
+              label={
+                status!.phase === 'scanning'
+                  ? t('settings.backfillScanning', { count: status!.total })
+                  : t('settings.backfillProgress', { pct, scanned: status!.scanned, total: status!.total })
+              }
             />
+            {status!.waitingUntil && (
+              <div className="text-xs text-amber-200/80">
+                {t('settings.backfillWaitingApple', { time: waitLabel })}
+              </div>
+            )}
+            {!!status!.albumsTotal && (
+              <div className="text-xs text-white/45">
+                {t('settings.backfillAlbums', {
+                  done: status!.albumsDone ?? 0,
+                  total: status!.albumsTotal,
+                  calls: status!.appleCalls ?? 0,
+                })}
+              </div>
+            )}
             <div className="flex flex-wrap gap-1.5">{badges(status!, false)}</div>
             {status!.current && (
               <div
@@ -1830,6 +1870,7 @@ function LyricsBackfillCard({ flash }: { flash: (msg: string) => void }) {
               ? t('settings.lastRunLyricsAdded', { count: s.added })
               : t('settings.lyricsAddedCount', { count: s.added })}
           </Badge>
+          {!!s.converted && <Badge variant="ok">{t('settings.lyricsConvertedCount', { count: s.converted })}</Badge>}
           <Badge>{t('settings.alreadyHaveLyricsCount', { count: s.skipped })}</Badge>
           <Badge>{t('settings.noAppleLyricsCount', { count: s.noLyrics })}</Badge>
           <Badge variant="warn">{t('settings.unmatchedCount', { count: s.noMatch })}</Badge>

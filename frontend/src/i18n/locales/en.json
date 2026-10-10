@@ -101,7 +101,7 @@
     "autoIntervalAuto_one": "Currently ≈ every {{label}} across {{count}} followed artist and playlist. Adjusts automatically to keep Apple Music API calls under the daily safety budget.",
     "autoIntervalAuto_other": "Currently ≈ every {{label}} across {{count}} followed artists and playlists. Adjusts automatically to keep Apple Music API calls under the daily safety budget.",
     "autoIntervalManual": "Each artist and playlist is checked at most once every {{label}}.",
-    "libraryTagsDescription": "Adds ISRC and barcode tags to untagged FLACs so music you already have is recognized.",
+    "libraryTagsDescription": "Adds ISRC and barcode tags to your FLAC files so albums and songs you already have are recognized as being in your library, whatever the folders are called. Audio, file names and other tags are not changed. Each album is looked up on Apple Music (two requests per album), so a large library takes a while; it pauses by itself when Apple rate limits this server. Files that already have both tags, or that Apple had no match for in the last 30 days, are skipped.",
     "backfillProgress": "{{pct}}% · scanned {{scanned}}/{{total}}",
     "stampedCount": "{{count}} stamped",
     "alreadyTaggedCount": "{{count}} already tagged",
@@ -206,7 +206,7 @@
     "copyToken": "Copy token",
     "regenerateToken": "Regenerate token",
     "cardLyrics": "Lyrics",
-    "lyricsBackfillDescription": "Fetches lyrics for tracks without a lyrics file. Needs a media-user-token.",
+    "lyricsBackfillDescription": "Adds missing lyrics files in the format set under Lyrics format (LRC, TTML or both) next to what is there. An existing TTML is converted to LRC without downloading; nothing is ever deleted or overwritten. Needs a media-user-token.",
     "backfillLyrics": "Fetch missing lyrics",
     "scanLibraryForMissingLyrics": "Scan your library for tracks without lyrics?",
     "lyricsBackfillStarted": "Lyrics backfill started",
@@ -225,7 +225,13 @@
     "namingModeDisplayHelp": "Names in your display language.",
     "namingModeOriginalIfAcceptedHelp": "Original names when their language is in your accepted list.",
     "namingModeDualHelp": "Display name with the original added, e.g. Bubbles (泡沫).",
-    "cardLibraryMaintenance": "Library maintenance"
+    "cardLibraryMaintenance": "Library maintenance",
+    "lyricsConvertedCount": "{{count}} converted from TTML",
+    "backfillScanning": "Scanning library… {{count}} files found",
+    "backfillAlbums": "Album {{done}} of {{total}} · {{calls}} Apple requests",
+    "backfillWaitingApple": "Paused: Apple is rate limiting this server. Resumes automatically in about {{time}}.",
+    "timeMinutes": "{{count}} min",
+    "timeSeconds": "{{count}} s"
   },
   "album": {
     "loadError": "Failed to load",

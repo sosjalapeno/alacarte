@@ -45,6 +45,10 @@ function catalogResponse(songs, albums) {
     }
 }
 
+function resetMusic() {
+    for (const name of fs.readdirSync(tmpMusic)) fs.rmSync(path.join(tmpMusic, name), { recursive: true, force: true })
+}
+
 async function waitUntilDone(timeoutMs = 30_000) {
     const t0 = Date.now()
     while (getTagBackfillStatus().running) {
@@ -158,4 +162,183 @@ test('stop flag ends the run early', async (t) => {
     const done = await waitUntilDone()
     assert.equal(done.running, false)
     assert.ok(done.scanned < 4, `expected early exit, scanned ${done.scanned}`)
+})
+
+test('one album costs two Apple calls however many tracks it has', async (t) => {
+    if (!hasFfmpeg) {
+        t.skip('ffmpeg not available on this host')
+        return
+    }
+    resetMusic()
+    const titles = ['Alpha', 'Bravo', 'Charlie']
+    titles.forEach((title, i) =>
+        makeFlac(`Artist Four/Trio/0${i + 1}. ${title}.flac`, {
+            title, artist: 'Artist Four', album: 'Trio',
+        }),
+    )
+    const calls = []
+    const deps = {
+        searchCatalog: async (args) => {
+            calls.push(`search:${args.types}`)
+            return {
+                results: { albums: { data: [{ id: 'alb1', attributes: { name: 'Trio', artistName: 'Artist Four' } }] } },
+            }
+        },
+        getAlbum: async ({ id }) => {
+            calls.push(`album:${id}`)
+            return {
+                data: [{
+                    attributes: { upc: '4444444444444' },
+                    relationships: {
+                        tracks: {
+                            data: titles.map((name, i) => ({
+                                attributes: { name, isrc: `FOUR0000000${i + 1}`, trackNumber: i + 1 },
+                            })),
+                        },
+                    },
+                }],
+            }
+        },
+        readSettings: async () => ({ storefront: 'us', language: 'en-US' }),
+        now: Date.now,
+    }
+    await startTagBackfill({ dryRun: false, deps })
+    const done = await waitUntilDone()
+    assert.deepEqual(calls, ['search:albums', 'album:alb1'])
+    assert.equal(done.stamped, 3)
+    assert.equal(done.appleCalls, 2)
+    assert.equal(done.phase, 'done')
+    const tags = readAudioIdentityTagsSync(path.join(tmpMusic, 'Artist Four/Trio/02. Bravo.flac'))
+    assert.equal(tags.isrc, 'FOUR00000002')
+    assert.equal(tags.upc, '4444444444444')
+})
+
+test('a rate limit pauses the run and it carries on afterwards instead of counting files as unmatched', async (t) => {
+    if (!hasFfmpeg) {
+        t.skip('ffmpeg not available on this host')
+        return
+    }
+    resetMusic()
+    makeFlac('Artist Five/Solo/01. Only.flac', { title: 'Only', artist: 'Artist Five', album: 'Solo' })
+    let first = true
+    const deps = {
+        searchCatalog: async () => {
+            if (first) {
+                first = false
+                throw Object.assign(new Error('Apple API 429 on /v1/catalog/us/search: Request is forbidden'), { retryAfterSec: 1 })
+            }
+            return { results: { albums: { data: [{ id: 'alb5', attributes: { name: 'Solo', artistName: 'Artist Five' } }] } } }
+        },
+        getAlbum: async () => ({
+            data: [{
+                attributes: { upc: '5555555555555' },
+                relationships: { tracks: { data: [{ attributes: { name: 'Only', isrc: 'FIVE00000001', trackNumber: 1 } }] } },
+            }],
+        }),
+        readSettings: async () => ({ storefront: 'us', language: 'en-US' }),
+        now: Date.now,
+    }
+    await startTagBackfill({ dryRun: false, deps })
+    let sawWaiting = false
+    for (let i = 0; i < 40 && getTagBackfillStatus().running; i++) {
+        if (getTagBackfillStatus().phase === 'waiting' && getTagBackfillStatus().waitingUntil) sawWaiting = true
+        await new Promise((r) => setTimeout(r, 50))
+    }
+    const done = await waitUntilDone()
+    assert.equal(sawWaiting, true, 'status reported the wait')
+    assert.equal(done.stamped, 1)
+    assert.equal(done.noMatch, 0)
+    assert.equal(done.failed, 0)
+})
+
+test('files Apple had nothing for are not asked about again until they change', async (t) => {
+    if (!hasFfmpeg) {
+        t.skip('ffmpeg not available on this host')
+        return
+    }
+    resetMusic()
+    const file = makeFlac('Artist Six/Lost/01. Nothing.flac', {
+        title: 'Nothing', artist: 'Artist Six', album: 'Lost',
+    })
+    let calls = 0
+    const deps = {
+        searchCatalog: async () => {
+            calls += 1
+            return catalogResponse([], [])
+        },
+        getAlbum: async () => ({ data: [] }),
+        readSettings: async () => ({ storefront: 'us', language: 'en-US' }),
+        now: Date.now,
+    }
+    await startTagBackfill({ deps })
+    const first = await waitUntilDone()
+    assert.equal(first.noMatch, 1)
+    assert.equal(first.cachedMisses, 0)
+    const afterFirst = calls
+    assert.ok(afterFirst >= 1)
+
+    await startTagBackfill({ deps })
+    const second = await waitUntilDone()
+    assert.equal(second.noMatch, 1)
+    assert.equal(second.cachedMisses, 1)
+    assert.equal(calls, afterFirst, 'no Apple call for a remembered miss')
+
+    await startTagBackfill({ deps, retryUnmatched: true })
+    await waitUntilDone()
+    assert.ok(calls > afterFirst, 'retryUnmatched asks again')
+
+    const later = calls
+    const future = new Date(Date.now() + 60_000)
+    fs.utimesSync(file, future, future)
+    await startTagBackfill({ deps })
+    const changed = await waitUntilDone()
+    assert.equal(changed.cachedMisses, 0)
+    assert.ok(calls > later, 'a changed file is checked again')
+})
+
+test('a track the album lookup did not cover is looked up as a song', async (t) => {
+    if (!hasFfmpeg) {
+        t.skip('ffmpeg not available on this host')
+        return
+    }
+    resetMusic()
+    for (const [i, title] of ['Alpha', 'Bravo', 'Bonus Track'].entries()) {
+        makeFlac(`Artist Seven/Deluxe/0${i + 1}. ${title}.flac`, { title, artist: 'Artist Seven', album: 'Deluxe' })
+    }
+    const calls = []
+    const deps = {
+        searchCatalog: async ({ term, types }) => {
+            calls.push(`${types}:${term}`)
+            if (types === 'albums') {
+                return { results: { albums: { data: [{ id: 'alb7', attributes: { name: 'Deluxe', artistName: 'Artist Seven' } }] } } }
+            }
+            // song search, only the bonus track is found this way
+            return catalogResponse(
+                [{ name: 'Bonus Track', artistName: 'Artist Seven', albumName: 'Deluxe', isrc: 'SEVEN0000003' }],
+                [{ name: 'Deluxe', artistName: 'Artist Seven', upc: '7777777777777' }],
+            )
+        },
+        getAlbum: async () => ({
+            data: [{
+                attributes: { upc: '7777777777777' },
+                relationships: {
+                    tracks: {
+                        data: [
+                            { attributes: { name: 'Alpha', isrc: 'SEVEN0000001', trackNumber: 1 } },
+                            { attributes: { name: 'Bravo', isrc: 'SEVEN0000002', trackNumber: 2 } },
+                        ],
+                    },
+                },
+            }],
+        }),
+        readSettings: async () => ({ storefront: 'us', language: 'en-US' }),
+        now: Date.now,
+    }
+    await startTagBackfill({ deps })
+    const done = await waitUntilDone()
+    assert.equal(done.stamped, 3)
+    assert.equal(done.noMatch, 0)
+    assert.equal(calls.filter((c) => c.startsWith('songs')).length, 1, 'one song search, for the bonus track only')
+    const bonus = readAudioIdentityTagsSync(path.join(tmpMusic, 'Artist Seven/Deluxe/03. Bonus Track.flac'))
+    assert.equal(bonus.isrc, 'SEVEN0000003')
 })

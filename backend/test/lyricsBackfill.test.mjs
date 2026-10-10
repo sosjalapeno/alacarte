@@ -97,3 +97,118 @@ test('backfill refuses to start without a media-user-token', async () => {
     (err) => err.statusCode === 412,
   )
 })
+
+const read = (p) => fs.readFileSync(p, 'utf8')
+const sidecars = (flac) => ({
+  lrc: flac.replace(/\.flac$/, '.lrc'),
+  ttml: flac.replace(/\.flac$/, '.ttml'),
+})
+
+async function run(format, overrides = {}) {
+  const requested = []
+  await startLyricsBackfill({
+    deps: deps({
+      readSettings: async () => ({ storefront: 'pl', language: 'en-US', lyricsFormat: format }),
+      getSongLyricsTtml: async ({ id }) => {
+        requested.push(id)
+        return TTML
+      },
+      ...overrides,
+    }),
+  })
+  await waitUntilDone()
+  return requested
+}
+
+function reset() {
+  for (const name of fs.readdirSync(tmpMusic)) fs.rmSync(path.join(tmpMusic, name), { recursive: true, force: true })
+}
+
+test("format 'both': an existing .ttml is converted to .lrc locally and left in place", async () => {
+  reset()
+  const flac = makeFlac('B/Album/01. Song.flac', 'USBBB0000001')
+  const { lrc, ttml } = sidecars(flac)
+  fs.writeFileSync(ttml, TTML)
+  const requested = await run('both')
+  assert.equal(read(ttml), TTML)
+  assert.equal(read(lrc), "[00:06.39]I been waitin' on this\n[01:02.50]Rock & roll\n")
+  assert.deepEqual(requested, [], 'no Apple call needed')
+  const st = getLyricsBackfillStatus()
+  assert.equal(st.converted, 1)
+  assert.equal(st.added, 0)
+})
+
+test("format 'both': an existing .lrc stays untouched and the .ttml is downloaded next to it", async () => {
+  reset()
+  const flac = makeFlac('B/Album/02. Song.flac', 'USBBB0000002')
+  const { lrc, ttml } = sidecars(flac)
+  fs.writeFileSync(lrc, 'my own lyrics\n')
+  const requested = await run('both')
+  assert.equal(read(lrc), 'my own lyrics\n')
+  assert.equal(read(ttml), TTML)
+  assert.deepEqual(requested, ['id-USBBB0000002'])
+})
+
+test("format 'both': a track with no lyrics gets both, from one download", async () => {
+  reset()
+  const flac = makeFlac('B/Album/03. Song.flac', 'USBBB0000003')
+  const { lrc, ttml } = sidecars(flac)
+  const requested = await run('both')
+  assert.equal(read(ttml), TTML)
+  assert.match(read(lrc), /^\[00:06\.39\]/)
+  assert.equal(requested.length, 1)
+  assert.equal(getLyricsBackfillStatus().added, 1)
+})
+
+test("format 'ttml' keeps an existing .lrc and adds the .ttml; 'lrc' keeps an existing .ttml and adds the .lrc", async () => {
+  reset()
+  const a = makeFlac('B/Album/04. Song.flac', 'USBBB0000004')
+  fs.writeFileSync(sidecars(a).lrc, 'old lrc\n')
+  await run('ttml')
+  assert.equal(read(sidecars(a).lrc), 'old lrc\n')
+  assert.equal(read(sidecars(a).ttml), TTML)
+
+  reset()
+  const b = makeFlac('B/Album/05. Song.flac', 'USBBB0000005')
+  fs.writeFileSync(sidecars(b).ttml, TTML)
+  await run('lrc')
+  assert.equal(read(sidecars(b).ttml), TTML)
+  assert.match(read(sidecars(b).lrc), /^\[00:06\.39\]/)
+})
+
+test('a track that already has every wanted format is skipped without any call', async () => {
+  reset()
+  const flac = makeFlac('B/Album/06. Song.flac', 'USBBB0000006')
+  fs.writeFileSync(sidecars(flac).lrc, 'a\n')
+  fs.writeFileSync(sidecars(flac).ttml, 'b\n')
+  let lookups = 0
+  await run('both', { getSongsByIsrc: async () => { lookups += 1; return { data: [] } } })
+  assert.equal(lookups, 0)
+  assert.equal(getLyricsBackfillStatus().skipped, 1)
+  assert.equal(read(sidecars(flac).ttml), 'b\n')
+})
+
+test('a rate limit pauses the lyrics run and it resumes', async () => {
+  reset()
+  const flac = makeFlac('B/Album/07. Song.flac', 'USBBB0000007')
+  let first = true
+  await startLyricsBackfill({
+    deps: deps({
+      getSongsByIsrc: async ({ isrcs }) => {
+        if (first) {
+          first = false
+          throw Object.assign(new Error('Apple API 429 on /v1/catalog/pl/songs: x'), { retryAfterSec: 1 })
+        }
+        return { data: isrcs.map((isrc) => ({ id: `id-${isrc}`, attributes: { isrc, hasLyrics: true } })) }
+      },
+    }),
+  })
+  let sawWaiting = false
+  while (getLyricsBackfillStatus().running) {
+    if (getLyricsBackfillStatus().waitingUntil) sawWaiting = true
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  assert.equal(sawWaiting, true)
+  assert.equal(getLyricsBackfillStatus().failed, 0)
+  assert.match(read(sidecars(flac).lrc), /^\[00:06\.39\]/)
+})

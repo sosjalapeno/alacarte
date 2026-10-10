@@ -101,7 +101,7 @@
     "autoIntervalAuto_one": "目前在 {{count}} 个已关注的艺人和播放列表中，大约每 {{label}} 检查一次。系统会自动调整，以使 Apple Music API 调用保持在每日安全额度以内。",
     "autoIntervalAuto_other": "目前在 {{count}} 个已关注的艺人和播放列表中，大约每 {{label}} 检查一次。系统会自动调整，以使 Apple Music API 调用保持在每日安全额度以内。",
     "autoIntervalManual": "每个艺人和播放列表最多每 {{label}} 检查一次。",
-    "libraryTagsDescription": "为缺少标签的 FLAC 添加 ISRC 和条码标签，以便识别已有的音乐。",
+    "libraryTagsDescription": "为 FLAC 文件添加 ISRC 和条码标签，使你已有的专辑和歌曲无论文件夹如何命名都能被识别为已在资料库中。不会更改音频、文件名或其他标签。每张专辑会在 Apple Music 查询两次，资料库较大时需要一些时间；当 Apple 限流时会自动暂停。已有这两个标签的文件，或最近 30 天内 Apple 无匹配的文件会被跳过。",
     "backfillProgress": "{{pct}}% · 已扫描 {{scanned}}/{{total}}",
     "stampedCount": "已标记 {{count}} 个",
     "alreadyTaggedCount": "{{count}} 个已标记",
@@ -206,7 +206,7 @@
     "copyToken": "复制令牌",
     "regenerateToken": "重新生成令牌",
     "cardLyrics": "歌词",
-    "lyricsBackfillDescription": "为没有歌词文件的曲目获取歌词。需要 media-user-token。",
+    "lyricsBackfillDescription": "按“歌词格式”设置（LRC、TTML 或两者）在现有文件旁补充缺少的歌词文件。已有的 TTML 会直接转换为 LRC，无需下载；不会删除或覆盖任何文件。需要 media-user-token。",
     "backfillLyrics": "获取缺失的歌词",
     "scanLibraryForMissingLyrics": "扫描资料库中没有歌词的曲目？",
     "lyricsBackfillStarted": "歌词补全已开始",
@@ -225,7 +225,13 @@
     "namingModeDisplayHelp": "使用显示语言的名称。",
     "namingModeOriginalIfAcceptedHelp": "原文语言在接受列表中时使用原文名称。",
     "namingModeDualHelp": "显示名称后附上原文，例如 Bubbles (泡沫)。",
-    "cardLibraryMaintenance": "资料库维护"
+    "cardLibraryMaintenance": "资料库维护",
+    "lyricsConvertedCount": "{{count}} 个由 TTML 转换",
+    "backfillScanning": "正在扫描资料库…已找到 {{count}} 个文件",
+    "backfillAlbums": "第 {{done}} / {{total}} 张专辑 · 已发送 {{calls}} 次 Apple 请求",
+    "backfillWaitingApple": "已暂停：Apple 正在限制此服务器的请求，约 {{time}} 后自动继续。",
+    "timeMinutes": "{{count}} 分钟",
+    "timeSeconds": "{{count}} 秒"
   },
   "album": {
     "loadError": "加载失败",

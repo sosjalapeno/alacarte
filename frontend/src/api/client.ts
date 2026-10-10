@@ -391,6 +391,12 @@ export type CloudDownloadAllProgress = {
 
 export type TagBackfillStatus = {
   running: boolean
+  phase?: 'idle' | 'scanning' | 'matching' | 'waiting' | 'done'
+  albumsDone?: number
+  albumsTotal?: number
+  appleCalls?: number
+  cachedMisses?: number
+  waitingUntil?: number | null
   dryRun: boolean
   scanned: number
   total: number
@@ -407,6 +413,8 @@ export type TagBackfillStatus = {
 
 export type LyricsBackfillStatus = {
   running: boolean
+  waitingUntil?: number | null
+  converted?: number
   scanned: number
   total: number
   added: number
@@ -423,6 +431,7 @@ export type LyricsBackfillStatus = {
 
 export type ArtistBackfillStatus = {
   running: boolean
+  waitingUntil?: number | null
   scanned: number
   total: number
   updated: number
