@@ -1,4 +1,5 @@
 import { emitEvent } from './eventBus.mjs'
+import { runInLane } from './appleGateway.mjs'
 import {
     getPlaylist,
     normalizePlaylist,
@@ -53,7 +54,11 @@ export function startPlaylistSyncScheduler() {
     runPlaylistSyncCheck({ reason: 'startup' }).catch(() => {})
 }
 
-export async function runPlaylistSyncCheck({
+export function runPlaylistSyncCheck(opts) {
+    return runInLane('background', () => runPlaylistSyncCheckNow(opts))
+}
+
+async function runPlaylistSyncCheckNow({
     reason = 'manual',
     force = false,
     deps = defaultDeps,

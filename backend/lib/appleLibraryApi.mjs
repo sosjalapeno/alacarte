@@ -1,5 +1,5 @@
 import { getBearerToken, invalidateBearerCache } from './appleToken.mjs'
-import { appleRequestSignal, searchCatalog } from './appleApi.mjs'
+import { appleFetch, searchCatalog } from './appleApi.mjs'
 
 const ME = 'https://amp-api.music.apple.com/v1/me'
 const LIBRARY_PAGE_SIZE = 100
@@ -13,7 +13,7 @@ async function apiGet(url, { mediaUserToken, language = 'en-US' } = {}) {
   }
   let token = await getBearerToken()
   const run = async (t) =>
-    fetch(url, {
+    appleFetch(url, {
       headers: {
         Authorization: `Bearer ${t}`,
         'Music-User-Token': mediaUserToken,
@@ -22,7 +22,6 @@ async function apiGet(url, { mediaUserToken, language = 'en-US' } = {}) {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Language': language || 'en-US',
       },
-      signal: appleRequestSignal(),
     })
   let res = await run(token)
   if (res.status === 401) {

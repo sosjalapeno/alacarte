@@ -1,5 +1,6 @@
 import express from 'express'
 
+import { sendAppleError } from '../lib/appleErrors.mjs'
 import { getAlbum, normalizeAlbum } from '../lib/appleApi.mjs'
 import { readSettings } from '../lib/settingsStore.mjs'
 
@@ -19,6 +20,6 @@ albumRouter.get('/:id', async (req, res) => {
     if (!album) return res.status(404).json({ error: 'album not found' })
     res.json({ album, storefront })
   } catch (err) {
-    res.status(502).json({ error: err.message })
+    sendAppleError(res, err)
   }
 })

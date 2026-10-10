@@ -11,6 +11,8 @@ import {
 } from '../lib/appleApi.mjs'
 import { parseAppleMusicUrl } from '../lib/appleMusicUrl.mjs'
 import { readSettings } from '../lib/settingsStore.mjs'
+import { rememberArtistNames } from '../lib/artistIdCache.mjs'
+import { sendAppleError } from '../lib/appleErrors.mjs'
 import { filterAlbumsByRating } from '../lib/contentRatingFilter.mjs'
 
 export const searchRouter = express.Router()
@@ -21,6 +23,11 @@ function isMissingCatalogResource(err) {
   if (err?.status === 404) return true
   const msg = String(err?.message || '')
   return /Apple API 404\b/.test(msg) || /resource not found/i.test(msg)
+}
+
+function sendSearchError(res, err) {
+  if (/^Apple API 429\b/.test(String(err?.message))) return sendAppleError(res, err)
+  return res.status(502).json({ error: clientSafeSearchError(err) })
 }
 
 function clientSafeSearchError(err) {
@@ -225,7 +232,7 @@ searchRouter.get('/', async (req, res) => {
         if (isMissingCatalogResource(err)) {
           return res.json({ ...EMPTY, storefront })
         }
-        return res.status(502).json({ error: clientSafeSearchError(err) })
+        return sendSearchError(res, err)
       }
     }
 
@@ -246,6 +253,8 @@ searchRouter.get('/', async (req, res) => {
       url: x.attributes?.url,
     }))
 
+    rememberArtistNames(storefront, artists)
+
     const resolveArtistId = (relId, artistName) => {
       if (relId) return relId
       const match = artists.find((a) => a.name === artistName)
@@ -260,6 +269,6 @@ searchRouter.get('/', async (req, res) => {
     const playlists = (r.playlists?.data || []).map((x) => mapPlaylist(x))
     res.json({ albums: filteredAlbums, artists, songs, playlists, storefront })
   } catch (err) {
-    res.status(502).json({ error: clientSafeSearchError(err) })
+    sendSearchError(res, err)
   }
 })

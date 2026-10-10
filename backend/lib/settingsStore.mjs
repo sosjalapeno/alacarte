@@ -51,6 +51,11 @@ const DEFAULTS = {
   uiLanguage: 'system',
   acceptedLanguages: [],
   namingLanguageMode: DEFAULT_NAMING_LANGUAGE_MODE,
+  // Apple request pacing (see appleGateway.mjs); null = use the built-in default.
+  appleGatewayIntervalMs: null,
+  appleGatewayMinIntervalMs: null,
+  appleGatewayAdaptive: true,
+  appleGatewayCooldownMinutes: null,
 }
 
 function normalizeAcceptedLanguages(list) {
@@ -68,6 +73,19 @@ function normalizeAcceptedLanguages(list) {
 }
 
 const QUALITY_VALUES = new Set(['flac', 'alac', 'atmos', 'aac'])
+
+// Number inside [min, max], or null when absent/invalid (= use the default).
+export function clampSetting(value, min, max) {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : null
+}
+
+export const APPLE_GATEWAY_LIMITS = {
+  appleGatewayIntervalMs: [100, 30_000],
+  appleGatewayMinIntervalMs: [100, 30_000],
+  appleGatewayCooldownMinutes: [1, 240],
+}
 export const NAMING_CONVENTION_VALUES = new Set(['apple', 'qobuz'])
 export const VERSION_GROUP_VALUES = new Set(['lossless', 'atmos', 'aac'])
 
@@ -262,6 +280,10 @@ function normalizeSettings(input) {
     namingLanguageMode: NAMING_LANGUAGE_MODE_VALUES.has(parsed?.namingLanguageMode)
       ? parsed.namingLanguageMode
       : DEFAULTS.namingLanguageMode,
+    appleGatewayIntervalMs: clampSetting(parsed?.appleGatewayIntervalMs, ...APPLE_GATEWAY_LIMITS.appleGatewayIntervalMs),
+    appleGatewayMinIntervalMs: clampSetting(parsed?.appleGatewayMinIntervalMs, ...APPLE_GATEWAY_LIMITS.appleGatewayMinIntervalMs),
+    appleGatewayAdaptive: toBool(parsed?.appleGatewayAdaptive, DEFAULTS.appleGatewayAdaptive),
+    appleGatewayCooldownMinutes: clampSetting(parsed?.appleGatewayCooldownMinutes, ...APPLE_GATEWAY_LIMITS.appleGatewayCooldownMinutes),
   }
 }
 

@@ -4,6 +4,7 @@ import path from 'node:path'
 import fsp from 'node:fs/promises'
 
 import { emitEvent } from './eventBus.mjs'
+import { runInLane } from './appleGateway.mjs'
 import { readSettings, readAppleCreds } from './settingsStore.mjs'
 import {
   artworkUrl,
@@ -1351,7 +1352,7 @@ async function tickQueue() {
     const job = state.jobs.get(id)
     if (!job || job.status !== 'queued') continue
     state.active.add(id)
-    runJob(job).finally(() => {
+    runInLane('batch', () => runJob(job)).finally(() => {
       state.active.delete(id)
       setImmediate(tickQueue)
     })

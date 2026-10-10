@@ -1,4 +1,5 @@
 import { emitEvent } from './eventBus.mjs'
+import { runInLane } from './appleGateway.mjs'
 import { loadArtistCatalogCached } from './artistCatalogCache.mjs'
 import { resolveIntervalMs } from './checkInterval.mjs'
 import { makeAlbumKey, scanLibraryOnce, stripTrailingYear } from './libraryIndex.mjs'
@@ -27,7 +28,11 @@ export function startAutoDownloadScheduler() {
   runAutoDownloadCheck({ reason: 'startup' }).catch(() => {})
 }
 
-export async function runAutoDownloadCheck({ reason = 'manual', force = false } = {}) {
+export function runAutoDownloadCheck(opts) {
+  return runInLane('background', () => runAutoDownloadCheckNow(opts))
+}
+
+async function runAutoDownloadCheckNow({ reason = 'manual', force = false } = {}) {
   if (running) return { ok: true, skipped: true, reason: 'already-running' }
   running = true
   try {

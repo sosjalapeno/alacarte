@@ -1,5 +1,6 @@
 import express from 'express'
 
+import { sendAppleError } from '../lib/appleErrors.mjs'
 import { readSettings } from '../lib/settingsStore.mjs'
 import { loadArtistCatalogCached } from '../lib/artistCatalogCache.mjs'
 
@@ -27,6 +28,6 @@ artistRouter.get('/:id', async (req, res) => {
       storefront,
     })
   } catch (err) {
-    res.status(502).json({ error: err.message })
+    sendAppleError(res, err)
   }
 })

@@ -49,6 +49,15 @@ function migrate(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_history_finished ON download_history(finished_at);
 
+    -- Apple artist IDs resolved for library artist names (artist_id NULL = no match).
+    CREATE TABLE IF NOT EXISTS artist_ids (
+      storefront TEXT NOT NULL,
+      name_key TEXT NOT NULL,
+      artist_id TEXT,
+      resolved_at INTEGER NOT NULL,
+      PRIMARY KEY (storefront, name_key)
+    );
+
     CREATE TABLE IF NOT EXISTS library_dirs (
       path TEXT PRIMARY KEY,
       parent TEXT,

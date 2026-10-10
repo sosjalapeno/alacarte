@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 
 import {
   api,
+  type AppleStatus,
   type ArtistBackfillStatus,
   type EffectiveCheckInterval,
   type LyricsBackfillStatus,
@@ -544,6 +545,12 @@ export function SettingsPage() {
                 </div>
               </label>
             </div>
+          </SettingsCard>
+        </StaggeredItem>
+
+        <StaggeredItem>
+          <SettingsCard icon={<Plug className="h-4 w-4" />} title={t('settings.cardAppleApi')}>
+            <AppleStatusCard flash={flash} />
           </SettingsCard>
         </StaggeredItem>
 
@@ -1776,6 +1783,146 @@ function BackfillCard<S extends BackfillStatusBase>({
         </div>
       </Modal>
     </section>
+  )
+}
+
+function AppleStatusCard({ flash }: { flash: (msg: string, err?: boolean) => void }) {
+  const { t } = useTranslation()
+  const [status, setStatus] = useState<AppleStatus | null>(null)
+  const [form, setForm] = useState<{ interval: string; min: string; adaptive: boolean; cooldown: string } | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(
+    () =>
+      api
+        .appleStatus()
+        .then((s) => {
+          setStatus(s)
+          setForm(
+            (prev) =>
+              prev ?? {
+                interval: String(s.config.intervalMs / 1000),
+                min: String(s.config.minIntervalMs / 1000),
+                adaptive: s.config.adaptive,
+                cooldown: String(s.config.cooldownMinutes),
+              },
+          )
+        })
+        .catch(() => {}),
+    [],
+  )
+
+  useEffect(() => {
+    load()
+    const timer = setInterval(() => {
+      load()
+      setNow(Date.now())
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [load])
+
+  if (!status || !form) return null
+
+  const minutes = Math.max(1, Math.round(status.cooldownSeconds / 60))
+  const wait =
+    status.cooldownSeconds >= 90
+      ? t('settings.timeMinutes', { count: minutes })
+      : t('settings.timeSeconds', { count: status.cooldownSeconds })
+  void now
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      await api.saveSettings({
+        appleGatewayIntervalMs: Math.round(Number(form.interval) * 1000) || null,
+        appleGatewayMinIntervalMs: Math.round(Number(form.min) * 1000) || null,
+        appleGatewayAdaptive: form.adaptive,
+        appleGatewayCooldownMinutes: Math.round(Number(form.cooldown)) || null,
+      })
+      setForm(null)
+      await load()
+      flash(t('settings.saved'))
+    } catch (err: any) {
+      flash(t('settings.errorPrefix', { message: err.message }), true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reset = async () => {
+    setBusy(true)
+    try {
+      setStatus(await api.resetApplePace())
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2.5">
+        <Badge variant={status.state === 'ok' ? 'ok' : status.state === 'cooldown' ? 'bad' : 'warn'}>
+          {status.state === 'cooldown'
+            ? t('settings.appleStatusCooldown', { time: wait })
+            : status.state === 'probing'
+              ? t('settings.appleStatusProbing')
+              : t('settings.appleStatusOk')}
+        </Badge>
+        <div className="text-[13px] text-white/50">
+          {t('settings.applePace', { seconds: (status.intervalMs / 1000).toFixed(1) })}
+        </div>
+        <div className="text-[13px] text-white/50">{t('settings.appleQueued', status.queued)}</div>
+        {status.rateLimited24h > 0 && (
+          <div className="text-[13px] text-amber-200/80">
+            {t('settings.appleRateLimited24h', { count: status.rateLimited24h })}
+          </div>
+        )}
+        {status.learnedFloorMs > 0 && (
+          <div className="flex flex-wrap items-center gap-3 text-[13px] text-white/50">
+            <span>{t('settings.appleLearnedFloor', { seconds: (status.learnedFloorMs / 1000).toFixed(1) })}</span>
+            <Button type="button" variant="ghost" onClick={reset} disabled={busy}>
+              {t('settings.appleResetLearned')}
+            </Button>
+          </div>
+        )}
+        <div className="text-xs text-white/40">{t('settings.appleStatusHelp')}</div>
+      </div>
+
+      <form className="space-y-3" onSubmit={save}>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1 text-sm text-white/70">
+            <span>{t('settings.appleIntervalLabel')}</span>
+            <Input type="number" min="0.1" max="30" step="0.1" value={form.interval}
+              onChange={(e) => setForm({ ...form, interval: e.target.value })} />
+          </label>
+          <label className="space-y-1 text-sm text-white/70">
+            <span>{t('settings.appleMinIntervalLabel')}</span>
+            <Input type="number" min="0.1" max="30" step="0.1" value={form.min}
+              onChange={(e) => setForm({ ...form, min: e.target.value })} />
+          </label>
+          <label className="space-y-1 text-sm text-white/70">
+            <span>{t('settings.appleCooldownLabel')}</span>
+            <Input type="number" min="1" max="240" step="1" value={form.cooldown}
+              onChange={(e) => setForm({ ...form, cooldown: e.target.value })} />
+          </label>
+        </div>
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={form.adaptive}
+            onChange={(e) => setForm({ ...form, adaptive: e.target.checked })}
+            className="mt-0.5 shrink-0"
+          />
+          <span className="text-sm text-white/70">{t('settings.appleAdaptiveLabel')}</span>
+        </label>
+        <div className="text-xs text-white/40">{t('settings.appleSettingsHelp')}</div>
+        <Button type="submit" disabled={busy}>
+          {t('settings.saveAppleSettings')}
+        </Button>
+      </form>
+    </div>
   )
 }
 

@@ -436,6 +436,27 @@ export type ArtistBackfillStatus = {
   error: string | null
 }
 
+export type AppleStatus = {
+  state: 'ok' | 'cooldown' | 'probing'
+  cooldownSeconds: number
+  intervalMs: number
+  floorMs: number
+  learnedFloorMs: number
+  config: { intervalMs: number; minIntervalMs: number; adaptive: boolean; cooldownMinutes: number }
+  inFlight: number
+  queued: { interactive: number; batch: number; background: number }
+  strikes: number
+  rateLimited24h: number
+  lastRateLimitedAt: number | null
+}
+
+export type AppleGatewaySettingsPatch = {
+  appleGatewayIntervalMs: number | null
+  appleGatewayMinIntervalMs: number | null
+  appleGatewayAdaptive: boolean
+  appleGatewayCooldownMinutes: number | null
+}
+
 type UnauthorizedHandler = (info: { needsSetup: boolean }) => void
 
 let onUnauthorized: UnauthorizedHandler | null = null
@@ -564,8 +585,10 @@ export const api = {
       body: JSON.stringify({ currentPassword }),
     }),
   health: () => http<HealthReport>('/api/health'),
+  appleStatus: () => http<AppleStatus>('/api/settings/apple-status'),
+  resetApplePace: () => http<AppleStatus>('/api/settings/apple-status/reset', { method: 'POST' }),
   settings: () => http<PublicSettings>('/api/settings'),
-  saveSettings: (patch: Partial<PublicSettings>) =>
+  saveSettings: (patch: Partial<PublicSettings> & Partial<AppleGatewaySettingsPatch>) =>
     http<PublicSettings>('/api/settings', {
       method: 'PUT',
       body: JSON.stringify(patch),

@@ -1,5 +1,6 @@
 import express from 'express'
 
+import { sendAppleError } from '../lib/appleErrors.mjs'
 import { getPlaylist, normalizePlaylist } from '../lib/appleApi.mjs'
 import { getLibraryPlaylistDetail } from '../lib/appleLibraryApi.mjs'
 import { readAppleCreds, readSettings } from '../lib/settingsStore.mjs'
@@ -26,7 +27,7 @@ playlistRouter.get('/library/:libraryId', async (req, res) => {
     if (err.code === 'NO_MEDIA_USER_TOKEN' || err.code === 'MEDIA_USER_TOKEN_REJECTED') {
       return res.status(err.statusCode || 412).json({ error: err.message })
     }
-    res.status(502).json({ error: err.message })
+    sendAppleError(res, err)
   }
 })
 
@@ -44,6 +45,6 @@ playlistRouter.get('/:id', async (req, res) => {
     if (!playlist) return res.status(404).json({ error: 'playlist not found' })
     res.json({ playlist, storefront })
   } catch (err) {
-    res.status(502).json({ error: err.message })
+    sendAppleError(res, err)
   }
 })
